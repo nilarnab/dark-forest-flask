@@ -47,8 +47,11 @@ def create_app() -> Flask:
     app.register_blueprint(auth_blueprint)
 
     @app.after_request
-    def allow_local_ui(response):
-        response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
+    def allow_configured_ui(response):
+        origin = request.headers.get("Origin", "").rstrip("/")
+        if origin in settings.cors_allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response

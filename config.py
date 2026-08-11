@@ -34,10 +34,16 @@ class Settings:
     client_fire_time_tolerance_seconds: float
     simulation_enabled: bool
     simulation_write_positions: bool
+    cors_allowed_origins: tuple[str, ...]
 
     @classmethod
     def from_environment(cls) -> "Settings":
         credential_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
+        cors_allowed_origins = tuple(
+            origin.strip().rstrip("/")
+            for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+            if origin.strip()
+        )
         return cls(
             firebase_database_url=os.getenv("FIREBASE_DATABASE_URL", "").strip(),
             firebase_service_account_path=Path(credential_path) if credential_path else None,
@@ -57,4 +63,5 @@ class Settings:
             # Set true temporarily only when rolling back to the legacy
             # location-writing worker.
             simulation_write_positions=_as_bool(os.getenv("SIMULATION_WRITE_POSITIONS"), False),
+            cors_allowed_origins=cors_allowed_origins,
         )
