@@ -1,0 +1,25 @@
+# Python environments, bytecode, and test/build caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/
+.coverage
+
+# Local environment configuration and credentials (keep .env.example committed)
+.env
+.env.local
+*.firebase-adminsdk-*.json
+*firebase-adminsdk*.json
+service-account*.json
+
+# Logs and operating-system/editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
