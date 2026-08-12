@@ -39,6 +39,11 @@ def create_app() -> Flask:
     runner.hit_distance_tolerance = settings.hit_distance_tolerance
 
     app = Flask(__name__)
+    # Gunicorn owns the process-wide logging configuration in Render. Set the
+    # Flask logger explicitly so the per-request timing diagnostics below are
+    # visible alongside Gunicorn's access logs.
+    app.logger.setLevel(logging.INFO)
+    app.logger.propagate = True
     app.config["settings"] = settings
     app.config["simulation_runner"] = runner
     app.config["universe_activity"] = activity
