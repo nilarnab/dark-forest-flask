@@ -170,6 +170,9 @@ def create_app() -> Flask:
 
     @app.post("/universes/<universe_id>/shots")
     def fire_shot(universe_id: str):
+        request_id = uuid.uuid4().hex[:8]
+        started_at = time.perf_counter()
+        app.logger.info("SHOT %s entered universe=%s", request_id, universe_id)
         payload = request.get_json(silent=True) or {}
         object_id = payload.get("objectid")
         gun_id = payload.get("gun_id")
@@ -183,7 +186,7 @@ def create_app() -> Flask:
         fired_at_holder = {}
         projectile_event: dict[str, object] = {}
 
-        def fire(universe):
+        def prepare_shot(universe):
             if not isinstance(universe, dict) or not isinstance(universe.get("objects"), dict):
                 raise ProjectileError("Universe does not exist.")
             ship = universe["objects"].get(object_id)
@@ -226,22 +229,17 @@ def create_app() -> Flask:
                 source_objectid=object_id, hit_radius=float(hit_radius), blast_impact=settings.projectile_blast_impact,
                 retention_seconds=settings.projectile_retention_seconds,
             )
-            universe["objects"][projectile_id] = projectile
-            universe["time"] = server_time
-            universe["time_updated_at_ms"] = now_ms
-            events = universe.setdefault("events", {})
-            if isinstance(events, dict):
-                events[f"fire_{projectile_id}"] = {
-                    "type": "PROJECTILE_FIRED",
-                    "projectile_id": projectile_id,
-                    "source_id": object_id,
-                    "occurred_at": fired_at,
-                    "start_location": projectile["location"],
-                    "rotation": float(rotation),
-                    "velocity": float(velocity),
-                    "hit_radius": float(hit_radius),
-                    "range": settings.projectile_range,
-                }
+            fire_event = {
+                "type": "PROJECTILE_FIRED",
+                "projectile_id": projectile_id,
+                "source_id": object_id,
+                "occurred_at": fired_at,
+                "start_location": projectile["location"],
+                "rotation": float(rotation),
+                "velocity": float(velocity),
+                "hit_radius": float(hit_radius),
+                "range": settings.projectile_range,
+            }
             projectile_event.update({
                 "type": "PROJECTILE_FIRED",
                 "projectile_id": projectile_id,
@@ -253,13 +251,48 @@ def create_app() -> Flask:
                 "fired_at": fired_at,
                 "range": settings.projectile_range,
             })
-            return universe
+            # Avoid a Firebase transaction on the complete universe. On a
+            # remote deployment, retrying that large transaction made firing
+            # wait seconds behind unrelated updates. A shot only appends a new
+            # object/event and advances the shared clock, so a targeted atomic
+            # multi-location update is sufficient here.
+            return {
+                f"universes/{universe_id}/objects/{projectile_id}": projectile,
+                f"universes/{universe_id}/events/fire_{projectile_id}": fire_event,
+                f"universes/{universe_id}/time": server_time,
+                f"universes/{universe_id}/time_updated_at_ms": now_ms,
+            }
 
         try:
-            repository.transaction_universe(universe_id, fire)
+            universe = repository.get_universe(universe_id)
+            read_completed_at = time.perf_counter()
+            app.logger.info(
+                "SHOT %s Firebase read completed in %.3fs",
+                request_id,
+                read_completed_at - started_at,
+            )
+            updates = prepare_shot(universe)
+            prepared_at = time.perf_counter()
+            app.logger.info(
+                "SHOT %s validation/preparation completed in %.3fs",
+                request_id,
+                prepared_at - read_completed_at,
+            )
+            repository.atomic_update(updates)
+            app.logger.info(
+                "SHOT %s Firebase targeted update completed in %.3fs (total %.3fs)",
+                request_id,
+                time.perf_counter() - prepared_at,
+                time.perf_counter() - started_at,
+            )
         except ProjectileError as error:
+            app.logger.warning("SHOT %s rejected after %.3fs: %s", request_id, time.perf_counter() - started_at, error)
             return jsonify({"ok": False, "error": str(error)}), 400
+        except Exception:
+            app.logger.exception("SHOT %s failed after %.3fs", request_id, time.perf_counter() - started_at)
+            raise
         live_events.publish(universe_id, projectile_event)
+        app.logger.info("SHOT %s responded in %.3fs", request_id, time.perf_counter() - started_at)
         return jsonify({"ok": True, "projectile_id": projectile_id, "fired_at": fired_at_holder["value"]}), 201
 
     @app.post("/universes/<universe_id>/projectiles/<projectile_id>/verify-hit")
