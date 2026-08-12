@@ -58,31 +58,33 @@ class SimulationRunner:
         updated = 0
         now_ms = time.time() * 1000
         for universe_id in self.activity.active_universe_ids():
-            with self.repository.universe_lock(universe_id):
-                universe = self.repository.get_universe(universe_id)
-                if not is_universe_active(universe):
-                    continue
-                end_time = simulation_time(universe, now_ms)
-                start_time = self._projectile_times.get(universe_id, float(universe.get("time", 0)))
-                if end_time <= start_time:
-                    continue
+            # Do not hold the local universe lock while waiting on Firebase.
+            # On a deployed service this read can take longer than the 0.1s
+            # collision interval, starving /shots and other player actions.
+            universe = self.repository.get_universe(universe_id)
+            if not is_universe_active(universe):
+                continue
+            end_time = simulation_time(universe, now_ms)
+            start_time = self._projectile_times.get(universe_id, float(universe.get("time", 0)))
+            if end_time <= start_time:
+                continue
 
-                # Evaluate a detached Firebase snapshot first. The fast loop
-                # must not commit a transaction every 100ms when no projectile
-                # actually hit or expired.
-                changed = apply_projectile_processing(universe, start_time, end_time, self.hit_distance_tolerance)
-                self._projectile_times[universe_id] = end_time
-                if not changed:
-                    continue
+            # Evaluate a detached Firebase snapshot first. The fast loop
+            # must not commit a transaction every 100ms when no projectile
+            # actually hit or expired.
+            changed = apply_projectile_processing(universe, start_time, end_time, self.hit_distance_tolerance)
+            self._projectile_times[universe_id] = end_time
+            if not changed:
+                continue
 
-                def process(current):
-                    if not isinstance(current, dict):
-                        return current
-                    apply_projectile_processing(current, start_time, end_time, self.hit_distance_tolerance)
+            def process(current):
+                if not isinstance(current, dict):
                     return current
+                apply_projectile_processing(current, start_time, end_time, self.hit_distance_tolerance)
+                return current
 
-                self.repository.transaction_universe(universe_id, process)
-                updated += 1
+            self.repository.transaction_universe(universe_id, process)
+            updated += 1
         return updated
 
     def run_projectile_processing_forever(self) -> None:
@@ -99,21 +101,22 @@ class SimulationRunner:
         deleted = 0
         now_ms = time.time() * 1000
         for universe_id in self.activity.active_universe_ids():
-            with self.repository.universe_lock(universe_id):
-                universe = self.repository.get_universe(universe_id)
-                if not is_universe_active(universe):
-                    continue
-                current_time = simulation_time(universe, now_ms)
-                if not apply_projectile_cleanup(universe, current_time, self.hit_event_retention_seconds):
-                    continue
+            # As above, keep Firebase reads outside the local write lock so a
+            # slow network response cannot delay player action endpoints.
+            universe = self.repository.get_universe(universe_id)
+            if not is_universe_active(universe):
+                continue
+            current_time = simulation_time(universe, now_ms)
+            if not apply_projectile_cleanup(universe, current_time, self.hit_event_retention_seconds):
+                continue
 
-                def clean(current):
-                    if isinstance(current, dict):
-                        apply_projectile_cleanup(current, current_time, self.hit_event_retention_seconds)
-                    return current
+            def clean(current):
+                if isinstance(current, dict):
+                    apply_projectile_cleanup(current, current_time, self.hit_event_retention_seconds)
+                return current
 
-                self.repository.transaction_universe(universe_id, clean)
-                deleted += 1
+            self.repository.transaction_universe(universe_id, clean)
+            deleted += 1
         return deleted
 
     def run_projectile_cleanup_forever(self) -> None:
