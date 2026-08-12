@@ -353,12 +353,16 @@ def create_app() -> Flask:
         return jsonify({"ok": True, **result_holder})
 
     if settings.simulation_enabled:
-        projectile_thread = Thread(target=runner.run_projectile_processing_forever, name="projectile-processing-worker", daemon=True)
         cleaner_thread = Thread(target=runner.run_projectile_cleanup_forever, name="projectile-cleanup-worker", daemon=True)
-        projectile_thread.start()
         cleaner_thread.start()
-        app.config["projectile_processing_thread"] = projectile_thread
         app.config["projectile_cleanup_thread"] = cleaner_thread
+        if settings.projectile_processing_enabled:
+            projectile_thread = Thread(target=runner.run_projectile_processing_forever, name="projectile-processing-worker", daemon=True)
+            projectile_thread.start()
+            app.config["projectile_processing_thread"] = projectile_thread
+            app.logger.info("Projectile processing worker started in a background thread (%.2fs ticks).", settings.projectile_processing_seconds)
+        else:
+            app.logger.info("Client-verified projectile mode enabled; continuous projectile polling is not started.")
         if settings.simulation_write_positions:
             thread = Thread(target=runner.run_forever, name="simulation-worker", daemon=True)
             thread.start()
@@ -366,7 +370,6 @@ def create_app() -> Flask:
             app.logger.info("Legacy position-writing simulation worker started (%.2fs ticks).", settings.tick_seconds)
         else:
             app.logger.info("Event-driven simulation mode enabled; normal position worker is not started.")
-        app.logger.info("Projectile processing worker started in a background thread (%.2fs ticks).", settings.projectile_processing_seconds)
         app.logger.info("Projectile cleanup worker started in a background thread (%.2fs ticks).", settings.projectile_cleanup_seconds)
 
     return app

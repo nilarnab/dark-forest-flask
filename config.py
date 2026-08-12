@@ -34,6 +34,7 @@ class Settings:
     client_fire_time_tolerance_seconds: float
     simulation_enabled: bool
     simulation_write_positions: bool
+    projectile_processing_enabled: bool
     cors_allowed_origins: tuple[str, ...]
 
     @classmethod
@@ -63,5 +64,8 @@ class Settings:
             # Set true temporarily only when rolling back to the legacy
             # location-writing worker.
             simulation_write_positions=_as_bool(os.getenv("SIMULATION_WRITE_POSITIONS"), False),
+            # Clients predict projectile movement and submit an exact hit time
+            # to the verifier, so continuous full-universe polling is opt-in.
+            projectile_processing_enabled=_as_bool(os.getenv("PROJECTILE_PROCESSING_ENABLED"), False),
             cors_allowed_origins=cors_allowed_origins,
         )
