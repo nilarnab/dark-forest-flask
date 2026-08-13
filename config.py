@@ -30,6 +30,8 @@ class Settings:
     projectile_retention_seconds: float
     hit_event_retention_seconds: float
     hit_distance_tolerance: float
+    star_death_blast_radius: float
+    star_death_blast_damage: float
     universe_activity_timeout_seconds: float
     client_fire_time_tolerance_seconds: float
     simulation_enabled: bool
@@ -58,6 +60,8 @@ class Settings:
             projectile_retention_seconds=float(os.getenv("PROJECTILE_RETENTION_SECONDS", "10")),
             hit_event_retention_seconds=float(os.getenv("HIT_EVENT_RETENTION_SECONDS", "10")),
             hit_distance_tolerance=float(os.getenv("HIT_DISTANCE_TOLERANCE", "1")),
+            star_death_blast_radius=float(os.getenv("STAR_DEATH_BLAST_RADIUS", "200")),
+            star_death_blast_damage=float(os.getenv("STAR_DEATH_BLAST_DAMAGE", "100")),
             universe_activity_timeout_seconds=float(os.getenv("UNIVERSE_ACTIVITY_TIMEOUT_SECONDS", "45")),
             client_fire_time_tolerance_seconds=float(os.getenv("CLIENT_FIRE_TIME_TOLERANCE_SECONDS", "1")),
             simulation_enabled=_as_bool(os.getenv("SIMULATION_ENABLED")),

@@ -19,7 +19,7 @@ from simulation.projectile import ProjectileError, build_projectile
 from simulation.clock import simulation_time
 from simulation.movement import curve_items, position_for_object_at_time
 from simulation.collision import verify_and_apply_collision
-from simulation.universe import apply_projectile_processing, straight_line_position
+from simulation.universe import apply_client_reported_projectile_hit, apply_projectile_processing, straight_line_position
 from simulation.transfer import ManeuverBlockedError, TransferError, apply_transfer_plan, build_transfer_plan
 from simulation.live_events import LiveEventBus
 from universe_factory.config import UniverseGenerationConfig
@@ -305,62 +305,25 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         target_id = payload.get("target_id")
         hit_time = payload.get("hit_time")
-        client_distance = payload.get("client_distance")
         if not isinstance(target_id, str) or not isinstance(hit_time, (int, float)):
             return jsonify({"ok": False, "error": "JSON must include target_id and numeric hit_time."}), 400
-        if client_distance is not None and not isinstance(client_distance, (int, float)):
-            return jsonify({"ok": False, "error": "client_distance must be numeric when supplied."}), 400
-        universe = repository.get_universe(universe_id)
-        if not isinstance(universe, dict):
-            return jsonify({"ok": False, "error": "Universe does not exist."}), 404
-        outcomes = universe.get("recent_projectile_outcomes")
-        outcome = outcomes.get(projectile_id) if isinstance(outcomes, dict) else None
-        diagnostics = hit_verification_diagnostics(
-            universe, projectile_id, target_id, float(hit_time),
-            float(client_distance) if client_distance is not None else None,
-        )
-        if isinstance(outcome, dict):
-            if outcome.get("status") == "HIT" and outcome.get("target_id") == target_id:
-                return jsonify({"ok": True, "status": "confirmed", "hit_time": outcome.get("hit_time"), "diagnostics": diagnostics})
-            return jsonify({"ok": True, "status": "rejected", "diagnostics": diagnostics, "flask_outcome": outcome})
-        if diagnostics_indicate_hit(diagnostics, settings.hit_distance_tolerance):
-            # Commit the verified client report immediately. This keeps the
-            # browser responsive without waiting for the background projectile
-            # loop, while Flask still decides whether the geometry is valid.
-            committed: dict[str, object] = {}
+        committed: dict[str, object] = {}
 
-            def commit(current):
-                if not isinstance(current, dict):
-                    committed.update(status="rejected")
-                    return current
-                outcomes = current.get("recent_projectile_outcomes")
-                existing = outcomes.get(projectile_id) if isinstance(outcomes, dict) else None
-                if isinstance(existing, dict):
-                    committed.update(status="confirmed" if existing.get("status") == "HIT" and existing.get("target_id") == target_id else "rejected", outcome=existing)
-                    return current
-                # A tiny swept interval preserves the existing 'first object
-                # struck wins' collision rule rather than trusting a target
-                # selected by the browser.
-                apply_projectile_processing(
-                    current, float(hit_time) - 0.01, float(hit_time) + 0.01,
-                    settings.hit_distance_tolerance,
-                )
-                outcomes = current.get("recent_projectile_outcomes")
-                result = outcomes.get(projectile_id) if isinstance(outcomes, dict) else None
-                committed.update(status="confirmed" if isinstance(result, dict) and result.get("status") == "HIT" and result.get("target_id") == target_id else "rejected", outcome=result)
+        def commit(current):
+            if not isinstance(current, dict):
+                committed.update(status="rejected", reason="Universe does not exist.")
                 return current
+            committed.update(apply_client_reported_projectile_hit(
+                current, projectile_id, target_id, float(hit_time),
+                settings.star_death_blast_radius, settings.star_death_blast_damage,
+            ))
+            return current
 
-            try:
-                repository.transaction_universe(universe_id, commit)
-            except TransactionConflictError as error:
-                return jsonify({"ok": False, "error": str(error)}), 409
-            return jsonify({"ok": True, "status": committed.get("status", "rejected"), "hit_time": hit_time, "diagnostics": diagnostics, "flask_outcome": committed.get("outcome")})
-        objects = universe.get("objects")
-        # With no outcome recorded, an active projectile means Flask has not
-        # accepted this claimed collision; reject the cosmetic prediction.
-        if isinstance(objects, dict) and projectile_id in objects:
-            return jsonify({"ok": True, "status": "rejected", "diagnostics": diagnostics})
-        return jsonify({"ok": True, "status": "pending", "diagnostics": diagnostics})
+        try:
+            repository.transaction_universe(universe_id, commit)
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        return jsonify({"ok": True, "hit_time": hit_time, **committed})
 
     @app.post("/universes/<universe_id>/collisions/verify")
     def verify_collision(universe_id: str):

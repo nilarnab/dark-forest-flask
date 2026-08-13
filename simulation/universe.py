@@ -125,6 +125,87 @@ def apply_projectile_processing(universe: dict[str, Any], start_time: float, end
     return changed
 
 
+def apply_client_reported_projectile_hit(
+    universe: dict[str, Any], projectile_id: str, target_id: str, hit_time: float,
+    star_death_blast_radius: float = 200, star_death_blast_damage: float = 100,
+) -> dict[str, Any]:
+    """Accept one client-predicted projectile contact without geometry replay."""
+    objects = universe.get("objects")
+    if not isinstance(objects, dict):
+        return {"status": "rejected", "reason": "Universe has no objects."}
+    projectile, target = objects.get(projectile_id), objects.get(target_id)
+    if not isinstance(projectile, dict) or projectile.get("sub_type") != "PROJECTILE":
+        return {"status": "rejected", "reason": "Projectile no longer exists."}
+    if not isinstance(target, dict):
+        return {"status": "rejected", "reason": "Target no longer exists."}
+    outcomes = universe.setdefault("recent_projectile_outcomes", {})
+    if not isinstance(outcomes, dict):
+        outcomes = {}
+        universe["recent_projectile_outcomes"] = outcomes
+    existing = outcomes.get(projectile_id)
+    if isinstance(existing, dict):
+        return {"status": "confirmed" if existing.get("status") == "HIT" and existing.get("target_id") == target_id else "rejected", "outcome": existing}
+    impact = projectile.get("blast_impact")
+    life_before = target.get("life")
+    life_after = None
+    if isinstance(life_before, (int, float)) and isinstance(impact, (int, float)):
+        life_after = max(0.0, float(life_before) - max(0.0, float(impact)))
+        target["life"] = life_after
+    location = projectile.get("location")
+    objects.pop(projectile_id, None)
+    blast_targets: list[str] = []
+    if life_after is not None and life_after <= 0:
+        preserve_dead_star(objects, target_id)
+        if target.get("type") == "NATURAL":
+            blast_targets = apply_star_death_blast(
+                objects, target_id, hit_time, star_death_blast_radius, star_death_blast_damage,
+            )
+    events = universe.setdefault("events", {})
+    if not isinstance(events, dict):
+        events = {}
+        universe["events"] = events
+    event = {"type": "PROJECTILE_HIT", "projectile_id": projectile_id, "target_id": target_id, "hit_time": hit_time, "location": location}
+    if isinstance(impact, (int, float)):
+        event["blast_impact"] = float(impact)
+    if isinstance(life_before, (int, float)):
+        event["life_before"] = float(life_before)
+    if life_after is not None:
+        event["life_after"] = life_after
+    if blast_targets:
+        event["blast_targets"] = blast_targets
+    events[f"hit_{projectile_id}_{round(hit_time * 1000)}"] = event
+    outcomes[projectile_id] = {"status": "HIT", "target_id": target_id, "hit_time": hit_time, "recorded_at": hit_time}
+    trim_projectile_outcomes(outcomes)
+    return {"status": "confirmed", "life_after": life_after}
+
+
+def apply_star_death_blast(
+    objects: dict[str, Any], source_id: str, hit_time: float, radius: float, damage: float,
+) -> list[str]:
+    """Apply one non-recursive star-death blast at the exact reported hit time."""
+    source = objects.get(source_id)
+    if not isinstance(source, dict) or radius <= 0 or damage <= 0:
+        return []
+    source_position = position_for_object_at_time(source, objects, hit_time)
+    if not source_position:
+        return []
+    affected: list[str] = []
+    for object_id, obj in list(objects.items()):
+        if object_id == source_id or not isinstance(obj, dict) or obj.get("sub_type") == "PROJECTILE":
+            continue
+        life = obj.get("life")
+        if not isinstance(life, (int, float)) or life <= 0:
+            continue
+        position = position_for_object_at_time(obj, objects, hit_time)
+        if not position or math.hypot(position["x"] - source_position["x"], position["y"] - source_position["y"]) > radius:
+            continue
+        obj["life"] = max(0.0, float(life) - min(float(damage), float(life)))
+        affected.append(object_id)
+        if obj["life"] <= 0:
+            preserve_dead_star(objects, object_id)
+    return affected
+
+
 def apply_projectile_cleanup(universe: dict[str, Any], current_time: float, hit_event_retention_seconds: float = 10) -> bool:
     """Prune retained projectiles and old transient hit events."""
     objects = universe.get("objects")

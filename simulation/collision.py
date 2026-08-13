@@ -85,8 +85,10 @@ def numeric_or_zero(value: Any) -> float:
 
 def preserve_dead_star(objects: dict[str, Any], object_id: str) -> None:
     object_data = objects.get(object_id)
-    if isinstance(object_data, dict) and object_data.get("sub_type") == "STAR":
-        object_data["sub_type"] = "DEAD_STAR"
+    if isinstance(object_data, dict) and object_data.get("type") == "NATURAL":
+        # A star stays a STAR in the data model after death. Its zero life is
+        # the state flag; clients render the red swollen/dead appearance from
+        # the remaining life fraction.
         object_data["life"] = 0.0
         return
     objects.pop(object_id, None)
