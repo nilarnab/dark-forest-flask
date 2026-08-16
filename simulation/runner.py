@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 import math
 import time
-import uuid
 
 from firebase.repository import UniverseRepository
 from simulation.activity import UniverseActivityTracker, is_universe_active
 from simulation.clock import simulation_time
 from simulation.universe import apply_projectile_cleanup, apply_projectile_processing, updates_for_universe
 from simulation.movement import position_for_object_at_time
-from simulation.projectile import build_projectile
+from simulation.projectile import ProjectileError
+from simulation.shots import prepare_shot
 
 
 logger = logging.getLogger(__name__)
@@ -162,36 +162,30 @@ class SimulationRunner:
         ship = objects.get(ship_id)
         target = next(((oid, obj) for oid, obj in objects.items() if isinstance(obj, dict) and obj.get("type") == "NATURAL" and obj.get("owner") not in {None, "agent_level_1"}), None)
         if not isinstance(ship, dict) or target is None: return False
-        gun = next((item for item in (ship.get("objects") or {}).values() if isinstance(item, dict) and item.get("type") == "GUN"), None)
+        gun_entry = next(((gun_id, item) for gun_id, item in (ship.get("objects") or {}).items() if isinstance(gun_id, str) and isinstance(item, dict) and item.get("type") == "GUN"), None)
         source = position_for_object_at_time(ship, objects, current_time)
         target_location = target[1].get("location")
-        if not isinstance(gun, dict) or not source or not isinstance(target_location, dict): return False
-        velocity, hit_radius = gun.get("velocity"), gun.get("hit_radius")
-        if not isinstance(velocity, (int, float)) or not isinstance(hit_radius, (int, float)): return False
-        # build_projectile deliberately accepts degrees, matching the player
-        # shot endpoint. Passing raw atan2 radians made agent shots appear to
-        # travel in random directions.
+        if gun_entry is None or not source or not isinstance(target_location, dict): return False
+        gun_id, _gun = gun_entry
+        # Player input supplies degrees. The agent derives the exact same
+        # input from its live position, then uses the player shot operation.
         rotation = math.degrees(math.atan2(float(target_location["y"]) - source["y"], float(target_location["x"]) - source["x"]))
-        projectile_id = f"projectile_{uuid.uuid4().hex}"
-        firing_ship = dict(ship); firing_ship["location"] = source
-        projectile = build_projectile(firing_ship, current_time, rotation, float(velocity), self.projectile_range, source_objectid=ship_id, hit_radius=float(hit_radius), blast_impact=self.projectile_blast_impact, retention_seconds=self.projectile_retention_seconds)
-        def commit(current):
-            if not isinstance(current, dict): return current
-            current_objects = current.get("objects")
-            current_agent = (current.get("agent_state") or {}).get("agent_level_1_enemy")
-            if not isinstance(current_objects, dict) or not isinstance(current_agent, dict) or current_agent.get("active") is not True: return current
-            # A heartbeat from another tab/process may have scheduled the
-            # same shot while this transaction was waiting.  Recheck the
-            # persisted cooldown before committing a second projectile.
-            if current_time - float(current_agent.get("last_fire_at", float("-inf"))) < 5:
-                return current
-            current_objects[projectile_id] = projectile
-            current.setdefault("events", {})[f"fire_{projectile_id}"] = {"type": "PROJECTILE_FIRED", "projectile_id": projectile_id, "source_id": ship_id, "occurred_at": current_time, "start_location": projectile["location"], "rotation": rotation, "velocity": velocity, "hit_radius": hit_radius, "range": self.projectile_range}
-            current_agent["last_fire_at"] = current_time
-            current["time"] = current_time; current["time_updated_at_ms"] = now_ms
-            return current
-        self.repository.transaction_universe(universe_id, commit)
-        logger.info("Level 1 agent fired in universe %s at simulation time %.3f.", universe_id, current_time)
+        try:
+            shot = prepare_shot(
+                universe_id, universe, ship_id, gun_id, rotation,
+                projectile_range=self.projectile_range,
+                projectile_blast_impact=self.projectile_blast_impact,
+                projectile_retention_seconds=self.projectile_retention_seconds,
+                client_fired_at=current_time,
+                now_ms=now_ms,
+            )
+        except ProjectileError:
+            logger.exception("Level 1 agent could not prepare a shot in universe %s.", universe_id)
+            return False
+        updates = dict(shot.updates)
+        updates[f"universes/{universe_id}/agent_state/agent_level_1_enemy/last_fire_at"] = shot.fired_at
+        self.repository.atomic_update(updates)
+        logger.info("Level 1 agent fired in universe %s at simulation time %.3f.", universe_id, shot.fired_at)
         return True
 
     def run_projectile_cleanup_forever(self) -> None:

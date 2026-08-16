@@ -14,7 +14,8 @@ from firebase.client import initialize_firebase
 from firebase.repository import TransactionConflictError, UniverseRepository
 from simulation.runner import SimulationRunner
 from simulation.activity import UniverseActivityTracker
-from simulation.projectile import ProjectileError, build_projectile
+from simulation.projectile import ProjectileError
+from simulation.shots import prepare_shot
 from simulation.clock import simulation_time
 from simulation.movement import curve_items, position_for_object_at_time
 from simulation.collision import verify_and_apply_collision
@@ -228,6 +229,14 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": str(error)}), 404
         except TransactionConflictError as error:
             return jsonify({"ok": False, "error": str(error)}), 409
+        if action == "combat_finish" and updated.get("active") is True:
+            # Fire the agent's opening shot at the exact moment the combat
+            # tutorial is dismissed, rather than waiting for the next UI
+            # heartbeat (which may be almost two seconds later).
+            try:
+                runner.run_level_one_agent_tick(universe_id)
+            except Exception:
+                app.logger.exception("Could not fire the Level 1 agent opening shot in %s.", universe_id)
         state = updated.get("career_state") if isinstance(updated.get("career_state"), dict) else {}
         return jsonify({
             "ok": True,
@@ -307,75 +316,6 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": "JSON must include objectid, gun_id, and rotation."}), 400
         if client_fired_at is not None and not isinstance(client_fired_at, (int, float)):
             return jsonify({"ok": False, "error": "client_fired_at must be a numeric simulation time."}), 400
-        projectile_id = f"projectile_{uuid.uuid4().hex}"
-        fired_at_holder = {}
-
-        def prepare_shot(universe):
-            if not isinstance(universe, dict) or not isinstance(universe.get("objects"), dict):
-                raise ProjectileError("Universe does not exist.")
-            ship = universe["objects"].get(object_id)
-            if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL":
-                raise ProjectileError("objectid must identify an ARTIFICIAL firing object.")
-            attachments = ship.get("objects")
-            gun = attachments.get(gun_id) if isinstance(attachments, dict) else None
-            if not isinstance(gun, dict) or gun.get("type") != "GUN":
-                raise ProjectileError("gun_id must identify an attached GUN.")
-            velocity = gun.get("velocity")
-            if not isinstance(velocity, (int, float)) or velocity <= 0:
-                raise ProjectileError("The selected GUN needs a positive numeric velocity.")
-            hit_radius = gun.get("hit_radius")
-            if not isinstance(hit_radius, (int, float)) or hit_radius <= 0:
-                raise ProjectileError("The selected GUN needs a positive numeric hit_radius.")
-            now_ms = time.time() * 1000
-            # Old universes may not have a clock anchor yet. Establish it on
-            # the first action so shots can be timestamped between ticks.
-            if not isinstance(universe.get("time_updated_at_ms"), (int, float)):
-                universe["time_updated_at_ms"] = now_ms
-            server_time = simulation_time(universe, now_ms)
-            fired_at = server_time if client_fired_at is None else float(client_fired_at)
-            tolerance = max(0.0, settings.client_fire_time_tolerance_seconds)
-            if abs(fired_at - server_time) > tolerance:
-                raise ProjectileError(
-                    f"CLIENT TIME REJECTED: supplied time differs from Flask by more than {tolerance:g}s."
-                )
-            base_time = float(universe.get("time", 0))
-            if fired_at < base_time:
-                raise ProjectileError("CLIENT TIME REJECTED: supplied time predates the authoritative universe state.")
-            firing_ship = dict(ship)
-            # Reconstruct from the curve's own phase timestamp. In
-            # event-driven mode `universe.time` is only a checkpoint.
-            firing_position = position_for_object_at_time(ship, universe["objects"], fired_at)
-            if firing_position is not None:
-                firing_ship["location"] = firing_position
-            fired_at_holder["value"] = fired_at
-            projectile = build_projectile(
-                firing_ship, fired_at, rotation, float(velocity), settings.projectile_range,
-                source_objectid=object_id, hit_radius=float(hit_radius), blast_impact=settings.projectile_blast_impact,
-                retention_seconds=settings.projectile_retention_seconds,
-            )
-            fire_event = {
-                "type": "PROJECTILE_FIRED",
-                "projectile_id": projectile_id,
-                "source_id": object_id,
-                "occurred_at": fired_at,
-                "start_location": projectile["location"],
-                "rotation": float(rotation),
-                "velocity": float(velocity),
-                "hit_radius": float(hit_radius),
-                "range": settings.projectile_range,
-            }
-            # Avoid a Firebase transaction on the complete universe. On a
-            # remote deployment, retrying that large transaction made firing
-            # wait seconds behind unrelated updates. A shot only appends a new
-            # object/event and advances the shared clock, so a targeted atomic
-            # multi-location update is sufficient here.
-            return {
-                f"universes/{universe_id}/objects/{projectile_id}": projectile,
-                f"universes/{universe_id}/events/fire_{projectile_id}": fire_event,
-                f"universes/{universe_id}/time": server_time,
-                f"universes/{universe_id}/time_updated_at_ms": now_ms,
-            }
-
         try:
             universe = repository.get_universe(universe_id)
             read_completed_at = time.perf_counter()
@@ -384,14 +324,21 @@ def create_app() -> Flask:
                 request_id,
                 read_completed_at - started_at,
             )
-            updates = prepare_shot(universe)
+            shot = prepare_shot(
+                universe_id, universe, object_id, gun_id, float(rotation),
+                projectile_range=settings.projectile_range,
+                projectile_blast_impact=settings.projectile_blast_impact,
+                projectile_retention_seconds=settings.projectile_retention_seconds,
+                client_fired_at=float(client_fired_at) if client_fired_at is not None else None,
+                client_fire_time_tolerance_seconds=settings.client_fire_time_tolerance_seconds,
+            )
             prepared_at = time.perf_counter()
             app.logger.info(
                 "SHOT %s validation/preparation completed in %.3fs",
                 request_id,
                 prepared_at - read_completed_at,
             )
-            repository.atomic_update(updates)
+            repository.atomic_update(shot.updates)
             app.logger.info(
                 "SHOT %s Firebase targeted update completed in %.3fs (total %.3fs)",
                 request_id,
@@ -405,7 +352,7 @@ def create_app() -> Flask:
             app.logger.exception("SHOT %s failed after %.3fs", request_id, time.perf_counter() - started_at)
             raise
         app.logger.info("SHOT %s responded in %.3fs", request_id, time.perf_counter() - started_at)
-        return jsonify({"ok": True, "projectile_id": projectile_id, "fired_at": fired_at_holder["value"]}), 201
+        return jsonify({"ok": True, "projectile_id": shot.projectile_id, "fired_at": shot.fired_at}), 201
 
     @app.post("/universes/<universe_id>/projectiles/<projectile_id>/verify-hit")
     def verify_projectile_hit(universe_id: str, projectile_id: str):
