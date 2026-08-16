@@ -75,7 +75,14 @@ class UniverseEvent(TypedDict, total=False):
 
 
 class UniverseRecord(TypedDict, total=False):
+    name: str
     active: bool
+    career: bool
+    darkforest: bool
+    career_level: int
+    career_state: "CareerState"
+    participants: dict[str, "UniverseParticipant"]
+    agent_state: dict[str, "AgentState"]
     time: float
     time_updated_at_ms: float
     objects: dict[str, UniverseObject]
@@ -101,10 +108,39 @@ class UniverseMembership(TypedDict):
     star_id: str
     ship_ids: dict[str, str]
     onboarded_at: float
+    universe_type: Literal["CAREER", "ARCADE"]
 
 
-class UserRecord(TypedDict):
-    username: str
-    password: str
+class CareerState(TypedDict):
+    current_step: str
+    status: str
+    tutorial_step: int
+    paused_time: float
+    tutorial_intermission: bool
+    tutorial_intermission_started_at_ms: float
+    enemy_contact_tutorial_step: int
+    enemy_contact_ship_id: str
+    enemy_contact_star_id: str
+    enemy_contact_expected_at: float
+    enemy_contact_progress_starts_at: float
+    status: Literal["ACTIVE", "TRANSITIONING", "COMPLETE"]
+
+
+class UniverseParticipant(TypedDict):
     type: Literal["HUMAN", "AGENT"]
+
+
+class AgentState(TypedDict):
+    agent_name: str
+    active: bool
+    mode: str
+    ship_id: str
+
+
+class UserRecord(TypedDict, total=False):
+    username: str | None
+    password: str | None
+    type: Literal["HUMAN", "AGENT"]
+    registration_state: Literal["PENDING", "COMPLETE"]
+    career_universe: str | None
     universe_memberships: dict[str, UniverseMembership]

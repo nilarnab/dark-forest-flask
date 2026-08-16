@@ -4,7 +4,7 @@ import math
 import random
 import uuid
 
-from schema.factories import new_empty_universe, new_gun, new_ship, new_star
+from schema.factories import new_empty_universe, new_gun, new_radar, new_ship, new_star
 from schema.models import Position, UniverseRecord
 from universe_factory.config import UniverseGenerationConfig
 
@@ -42,6 +42,8 @@ def create_ship(
     owner: str,
     orbit_radius: float | None = None,
     object_id: str | None = None,
+    phase: float | None = None,
+    velocity: float | None = None,
 ) -> str:
     objects = universe.setdefault("objects", {})
     star = objects.get(star_id)
@@ -50,16 +52,17 @@ def create_ship(
     radius = config.ship_orbit_radius if orbit_radius is None else orbit_radius
     if radius <= 0:
         raise UniverseGenerationError("Ship orbit radius must be positive.")
-    phase = rng.uniform(0, math.tau)
+    orbit_phase = rng.uniform(0, math.tau) if phase is None else phase
+    orbit_velocity = config.ship_orbit_velocity if velocity is None else velocity
     star_location = star["location"]
     location = {
-        "x": float(star_location["x"]) + math.cos(phase) * radius,
-        "y": float(star_location["y"]) + math.sin(phase) * radius,
+        "x": float(star_location["x"]) + math.cos(orbit_phase) * radius,
+        "y": float(star_location["y"]) + math.sin(orbit_phase) * radius,
     }
     ship_id = object_id or f"ship_{uuid.uuid4().hex}"
     if ship_id in objects:
         raise UniverseGenerationError(f"Object ID already exists: {ship_id}")
-    objects[ship_id] = new_ship(location, star_id, radius, phase, config.ship_orbit_velocity, rng.choice([-1, 1]), owner, config.ship_life, config.ship_border_radius)
+    objects[ship_id] = new_ship(location, star_id, radius, orbit_phase, orbit_velocity, rng.choice([-1, 1]), owner, config.ship_life, config.ship_border_radius)
     return ship_id
 
 
@@ -72,6 +75,20 @@ def mount_gun(universe: UniverseRecord, ship_id: str, velocity: float, hit_radiu
     if attached_id in attachments:
         raise UniverseGenerationError(f"Attached object ID already exists: {attached_id}")
     attachments[attached_id] = new_gun(velocity, hit_radius)
+    return attached_id
+
+
+def mount_radar(universe: UniverseRecord, ship_id: str, radius: float, radar_id: str | None = None) -> str:
+    ship = universe.setdefault("objects", {}).get(ship_id)
+    if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL":
+        raise UniverseGenerationError(f"Cannot mount radar on unknown ship: {ship_id}")
+    if radius <= 0:
+        raise UniverseGenerationError("Radar radius must be positive.")
+    attachments = ship.setdefault("objects", {})
+    attached_id = radar_id or f"radar_{uuid.uuid4().hex}"
+    if attached_id in attachments:
+        raise UniverseGenerationError(f"Attached object ID already exists: {attached_id}")
+    attachments[attached_id] = new_radar(radius)
     return attached_id
 
 

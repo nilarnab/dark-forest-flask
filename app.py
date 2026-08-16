@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
 import uuid
 from threading import Thread
 
-from flask import Flask, Response, jsonify, request, stream_with_context
+from flask import Flask, jsonify, request
 
 from auth.routes import auth_blueprint
 from config import Settings
@@ -21,8 +20,8 @@ from simulation.movement import curve_items, position_for_object_at_time
 from simulation.collision import verify_and_apply_collision
 from simulation.universe import apply_client_reported_projectile_hit, apply_projectile_processing, straight_line_position
 from simulation.transfer import ManeuverBlockedError, TransferError, apply_transfer_plan, build_transfer_plan
-from simulation.live_events import LiveEventBus
 from universe_factory.config import UniverseGenerationConfig
+from career.config import CareerGenerationConfig
 
 
 def create_app() -> Flask:
@@ -30,13 +29,16 @@ def create_app() -> Flask:
     initialize_firebase(settings)
     repository = UniverseRepository()
     activity = UniverseActivityTracker(settings.universe_activity_timeout_seconds)
-    live_events = LiveEventBus()
     universe_generation = UniverseGenerationConfig.from_environment()
+    career_generation = CareerGenerationConfig.from_environment(universe_generation)
     runner = SimulationRunner(repository, settings.tick_seconds, activity, settings.simulation_write_positions)
     runner.projectile_processing_seconds = settings.projectile_processing_seconds
     runner.projectile_cleanup_seconds = settings.projectile_cleanup_seconds
     runner.hit_event_retention_seconds = settings.hit_event_retention_seconds
     runner.hit_distance_tolerance = settings.hit_distance_tolerance
+    runner.projectile_range = settings.projectile_range
+    runner.projectile_blast_impact = settings.projectile_blast_impact
+    runner.projectile_retention_seconds = settings.projectile_retention_seconds
 
     app = Flask(__name__)
     # Gunicorn owns the process-wide logging configuration in Render. Set the
@@ -47,8 +49,8 @@ def create_app() -> Flask:
     app.config["settings"] = settings
     app.config["simulation_runner"] = runner
     app.config["universe_activity"] = activity
-    app.config["live_events"] = live_events
     app.config["universe_generation"] = universe_generation
+    app.config["career_generation"] = career_generation
     app.register_blueprint(auth_blueprint)
 
     @app.after_request
@@ -71,52 +73,170 @@ def create_app() -> Flask:
         updated = runner.run_tick()
         return jsonify({"ok": True, "universes_updated": updated})
 
-    @app.get("/universes/<universe_id>/live-events")
-    def stream_live_events(universe_id: str):
-        def event_stream():
-            for event in live_events.stream(universe_id):
-                if event is None:
-                    yield ": keepalive\n\n"
-                else:
-                    yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
-        return Response(
-            stream_with_context(event_stream()),
-            mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    @app.post("/universes/<universe_id>/projectile-previews")
-    def relay_projectile_preview(universe_id: str):
-        """Fan out a cosmetic shot preview without waiting for Firebase."""
+    @app.post("/universes/<universe_id>/tutorial")
+    def update_tutorial(universe_id: str):
+        """Advance one deterministic Level 1 tutorial state transition."""
         payload = request.get_json(silent=True) or {}
-        required_strings = ("projectile_id", "source_id")
-        required_numbers = ("rotation", "velocity", "hit_radius", "fired_at", "range")
-        start = payload.get("start_location")
-        if (
-            any(not isinstance(payload.get(key), str) for key in required_strings)
-            or any(not isinstance(payload.get(key), (int, float)) for key in required_numbers)
-            or not isinstance(start, dict)
-            or not isinstance(start.get("x"), (int, float))
-            or not isinstance(start.get("y"), (int, float))
-        ):
-            return jsonify({"ok": False, "error": "Invalid projectile preview payload."}), 400
-        live_events.publish(universe_id, {
-            "type": "PROJECTILE_FIRED_PREVIEW",
-            "projectile_id": payload["projectile_id"],
-            "source_id": payload["source_id"],
-            "start_location": {"x": float(start["x"]), "y": float(start["y"])},
-            "rotation": float(payload["rotation"]),
-            "velocity": float(payload["velocity"]),
-            "hit_radius": float(payload["hit_radius"]),
-            "fired_at": float(payload["fired_at"]),
-            "range": float(payload["range"]),
-        })
-        return jsonify({"ok": True}), 202
+        action = payload.get("action")
+        app.logger.info("TUTORIAL action=%r universe=%s object_id=%r", action, universe_id, payload.get("object_id"))
+        if action not in {"next", "back", "auto_pause", "ensure_paused", "enemy_contact", "contact_next", "contact_back", "begin_combat", "combat_ship", "combat_orbit", "combat_star", "combat_transfer_sent", "combat_radar_locked", "combat_status_next", "combat_finish"}:
+            app.logger.warning("TUTORIAL rejected unknown action=%r universe=%s", action, universe_id)
+            return jsonify({"ok": False, "error": "Unknown tutorial action."}), 400
+        contact_object_id = payload.get("object_id")
 
-    @app.post("/universes/<universe_id>/projectile-previews/<preview_id>/cancel")
-    def cancel_projectile_preview(universe_id: str, preview_id: str):
-        live_events.publish(universe_id, {"type": "PROJECTILE_CANCELLED", "projectile_id": preview_id})
-        return jsonify({"ok": True})
+        def update(universe):
+            if not isinstance(universe, dict) or universe.get("career") is not True:
+                raise TransferError("Career universe does not exist.")
+            now_ms = time.time() * 1000
+            career_state = universe.setdefault("career_state", {})
+            if not isinstance(career_state, dict):
+                career_state = {}
+                universe["career_state"] = career_state
+            step = int(career_state.get("tutorial_step", 0))
+            intermission = career_state.get("tutorial_intermission") is True
+            contact_step = career_state.get("enemy_contact_tutorial_step")
+            if not isinstance(contact_step, int):
+                contact_step = None
+
+            # Enemy contact is a separate, one-time tutorial after the base
+            # Level 1 sequence. Freeze the exact analytic instant at which a
+            # hostile ship first becomes visible; never rewind to a prior
+            # Firebase location.
+            if action == "enemy_contact":
+                if step < 6 or contact_step is not None:
+                    return universe
+                objects = universe.get("objects")
+                ship = objects.get(contact_object_id) if isinstance(objects, dict) and isinstance(contact_object_id, str) else None
+                if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL" or ship.get("sub_type") == "PROJECTILE":
+                    raise TransferError("Enemy contact must identify an enemy ship.")
+                home_star_id = None
+                for _, curve in curve_items(ship.get("curves")):
+                    focus_id = curve.get("focus1") if isinstance(curve, dict) else None
+                    focus = objects.get(focus_id) if isinstance(objects, dict) and isinstance(focus_id, str) else None
+                    if isinstance(focus, dict) and focus.get("type") == "NATURAL":
+                        home_star_id = focus_id
+                        break
+                if home_star_id is None:
+                    raise TransferError("Enemy ship does not have an identifiable home star.")
+                current_time = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+                career_state["enemy_contact_tutorial_step"] = 0
+                career_state["enemy_contact_ship_id"] = contact_object_id
+                career_state["enemy_contact_star_id"] = home_star_id
+                career_state["tutorial_intermission"] = False
+                career_state.pop("tutorial_intermission_started_at_ms", None)
+                universe["time"] = current_time
+                universe["time_updated_at_ms"] = now_ms
+                universe["active"] = False
+                return universe
+
+            combat_step = career_state.get("combat_tutorial_step")
+            if not isinstance(combat_step, int):
+                combat_step = None
+            if action == "begin_combat":
+                if step < 6 or contact_step != 2 or combat_step is not None:
+                    return universe
+                current_time = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+                career_state["combat_tutorial_step"] = 0
+                universe["time"] = current_time
+                universe["time_updated_at_ms"] = now_ms
+                universe["active"] = False
+                return universe
+            if action in {"combat_ship", "combat_orbit", "combat_star", "combat_transfer_sent", "combat_radar_locked", "combat_status_next", "combat_finish"}:
+                transitions = {
+                    "combat_ship": (0, 1), "combat_orbit": (1, 2), "combat_star": (2, 3),
+                    "combat_transfer_sent": (3, 4), "combat_radar_locked": (4, 5),
+                    "combat_status_next": (5, 6), "combat_finish": (6, 7),
+                }
+                expected, next_step = transitions[action]
+                if combat_step != expected:
+                    return universe
+                career_state["combat_tutorial_step"] = next_step
+                career_state["tutorial_intermission"] = False
+                career_state.pop("tutorial_intermission_started_at_ms", None)
+                if action == "combat_status_next":
+                    agent_state = universe.get("agent_state")
+                    if isinstance(agent_state, dict):
+                        agent = agent_state.get("agent_level_1_enemy")
+                        if isinstance(agent, dict):
+                            agent["active"] = True
+                            agent["mode"] = "FIRING"
+                active_after = action in {"combat_orbit", "combat_transfer_sent", "combat_finish"}
+                # Checkpoint analytic time before every new paused tutorial.
+                # Without this, a resume uses the old checkpoint and appears
+                # to leap through the maneuver that happened while active.
+                universe["time"] = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+                universe["time_updated_at_ms"] = now_ms
+                universe["active"] = active_after
+                return universe
+
+            if action in {"contact_next", "contact_back"}:
+                if contact_step is None or contact_step >= 2:
+                    return universe
+                contact_step = contact_step + 1 if action == "contact_next" else max(0, contact_step - 1)
+                career_state["enemy_contact_tutorial_step"] = contact_step
+                career_state["tutorial_intermission"] = False
+                career_state.pop("tutorial_intermission_started_at_ms", None)
+                universe["time_updated_at_ms"] = now_ms
+                # The final contact message resumes from the frozen time with
+                # a fresh anchor. The ship cannot jump forward on dismissal.
+                universe["active"] = contact_step >= 2
+                return universe
+
+            if action == "next" and not intermission:
+                step = min(6, step + 1)
+                # Steps 2 and 4 are three-second live demonstrations. Step
+                # 5 is the shorter two-second radar-observation beat; the
+                # client uses its step to select the matching duration.
+                intermission = step in {2, 4, 5}
+            elif action == "back" and not intermission:
+                step = max(0, step - 1)
+            elif action == "auto_pause":
+                intermission = False
+
+            if intermission:
+                # `universe.time` is the sole frozen timestamp. Resume from
+                # that exact value and establish a fresh wall-clock anchor.
+                current_time = float(universe.get("time", 0))
+                career_state["tutorial_intermission"] = True
+                career_state["tutorial_intermission_started_at_ms"] = now_ms
+                active = True
+            elif step < 6:
+                # Freeze at the actual analytic position/time at the instant
+                # this transition is committed, never at an old location.
+                current_time = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+                career_state["paused_time"] = current_time
+                career_state["tutorial_intermission"] = False
+                career_state.pop("tutorial_intermission_started_at_ms", None)
+                active = False
+            else:
+                # The final resume starts precisely at the frozen universe
+                # value; it never derives a second, stale checkpoint.
+                current_time = float(universe.get("time", 0))
+                career_state["tutorial_intermission"] = False
+                career_state.pop("tutorial_intermission_started_at_ms", None)
+                active = True
+            career_state["tutorial_step"] = step
+            career_state["status"] = "COMPLETED" if step >= 6 else "ACTIVE"
+            universe["time"] = current_time
+            universe["time_updated_at_ms"] = now_ms
+            universe["active"] = active
+            return universe
+
+        try:
+            updated = repository.transaction_universe(universe_id, update)
+        except TransferError as error:
+            return jsonify({"ok": False, "error": str(error)}), 404
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        state = updated.get("career_state") if isinstance(updated.get("career_state"), dict) else {}
+        return jsonify({
+            "ok": True,
+            "step": state.get("tutorial_step", 0),
+            "enemy_contact_step": state.get("enemy_contact_tutorial_step"),
+            "active": updated.get("active") is True,
+            "intermission": state.get("tutorial_intermission") is True,
+            "intermission_started_at_ms": state.get("tutorial_intermission_started_at_ms"),
+        })
 
     @app.post("/universes/<universe_id>/transfers")
     def create_transfer(universe_id: str):
@@ -189,7 +309,6 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "error": "client_fired_at must be a numeric simulation time."}), 400
         projectile_id = f"projectile_{uuid.uuid4().hex}"
         fired_at_holder = {}
-        projectile_event: dict[str, object] = {}
 
         def prepare_shot(universe):
             if not isinstance(universe, dict) or not isinstance(universe.get("objects"), dict):
@@ -245,17 +364,6 @@ def create_app() -> Flask:
                 "hit_radius": float(hit_radius),
                 "range": settings.projectile_range,
             }
-            projectile_event.update({
-                "type": "PROJECTILE_FIRED",
-                "projectile_id": projectile_id,
-                "source_id": object_id,
-                "start_location": projectile["location"],
-                "rotation": float(rotation),
-                "velocity": float(velocity),
-                "hit_radius": float(hit_radius),
-                "fired_at": fired_at,
-                "range": settings.projectile_range,
-            })
             # Avoid a Firebase transaction on the complete universe. On a
             # remote deployment, retrying that large transaction made firing
             # wait seconds behind unrelated updates. A shot only appends a new
@@ -296,7 +404,6 @@ def create_app() -> Flask:
         except Exception:
             app.logger.exception("SHOT %s failed after %.3fs", request_id, time.perf_counter() - started_at)
             raise
-        live_events.publish(universe_id, projectile_event)
         app.logger.info("SHOT %s responded in %.3fs", request_id, time.perf_counter() - started_at)
         return jsonify({"ok": True, "projectile_id": projectile_id, "fired_at": fired_at_holder["value"]}), 201
 

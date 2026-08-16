@@ -24,6 +24,13 @@ Firebase path: `universes/{universeId}`
 | `events` | map, optional | Short-lived authoritative action and outcome events (for example `PROJECTILE_FIRED`, `TRANSFER_SCHEDULED`, and confirmed combat events). |
 | `recent_projectile_outcomes` | map, optional | Rolling backend record of recent projectile results. |
 | `spawn_config` | map | Starter ship and gun settings captured when this generated universe was created. |
+| `name` | string, optional | Human-readable universe label, such as `GUEST_4821`. |
+| `career` | boolean, optional | Marks a personal level-based campaign universe. |
+| `darkforest` | boolean, optional | Enables radar-gated enemy visibility in the client. |
+| `career_level` | number, optional | Current personal campaign level. |
+| `career_state` | map, optional | Runtime level state, including `current_step`, `status`, `tutorial_step` (the number of completed tutorial screens; Level 1 completes at step `6`), `paused_time` (the exact simulation-time checkpoint used to resume), and `tutorial_intermission` (a short live interval between Level 1 instructions). `enemy_contact_progress_starts_at` and `enemy_contact_expected_at` define the planned Level 1 radar-entry window used by the contact progress bar; `enemy_contact_tutorial_step`, `enemy_contact_ship_id`, and `enemy_contact_star_id` persist the one-time radar-contact lesson after the opening tutorial. Normally, an unfinished tutorial keeps `active` `false`. |
+| `participants` | map, optional | Stable HUMAN/AGENT competitors, retained even after their assets are destroyed. |
+| `agent_state` | map, optional | Per-universe dormant/active state for campaign agent instances. |
 
 ## Objects
 

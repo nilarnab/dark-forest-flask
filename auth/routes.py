@@ -3,9 +3,25 @@ from __future__ import annotations
 from flask import Blueprint, current_app, jsonify, request
 
 from auth.service import AuthenticationError, authenticate_human, create_universe_for_user, enter_universe_for_user
+from career.service import CareerInviteError, create_or_resume_level_one_invite
 
 
 auth_blueprint = Blueprint("auth", __name__, url_prefix="/auth")
+
+
+@auth_blueprint.post("/career/invite/level1")
+def enter_level_one_invite():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = create_or_resume_level_one_invite(
+            payload.get("guest_user_id"),
+            current_app.config["universe_generation"],
+            current_app.config["career_generation"],
+            reset_existing=payload.get("reset") is True,
+        )
+    except (CareerInviteError, ValueError) as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": True, "user_id": result.user_id, "universe_id": result.universe_id, "created": result.created}), 201 if result.created else 200
 
 
 @auth_blueprint.post("/login")
