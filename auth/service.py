@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from firebase.client import root_reference
-from schema.factories import new_human_user
+from schema.factories import new_human_user, new_pending_human_user
 from universe_factory.config import UniverseGenerationConfig
 from universe_factory.generator import create_universe
 from universe_factory.onboarding import OnboardingError, onboard_user
@@ -13,6 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+GUEST_USER_PATTERN = re.compile(r"^guest_user_[0-9a-f]{32}$")
 
 
 class AuthenticationError(ValueError):
@@ -37,6 +39,11 @@ class UniverseEntryResult:
     onboarded: bool
     star_id: str
     ship_ids: dict[str, str]
+
+
+@dataclass(frozen=True)
+class UniverseInviteResult(UniverseEntryResult):
+    user_id: str
 
 
 def authenticate_human(username: Any, password: Any) -> AuthenticationResult:
@@ -68,14 +75,16 @@ def authenticate_human(username: Any, password: Any) -> AuthenticationResult:
     return AuthenticationResult(**result)
 
 
-def create_universe_for_user(username: Any, config: UniverseGenerationConfig) -> UniverseCreationResult:
+def create_universe_for_user(username: Any, config: UniverseGenerationConfig, darkforest: Any = True) -> UniverseCreationResult:
     """Atomically create a generated universe; membership is created on entry."""
     if not isinstance(username, str) or not USERNAME_PATTERN.fullmatch(username):
         raise AuthenticationError("Invalid logged-in username.")
+    if not isinstance(darkforest, bool):
+        raise AuthenticationError("darkforest must be true or false.")
     # A four-digit code has only 9,000 usable values, so retry a collision
     # rather than making the player choose another code themselves.
     for _ in range(20):
-        universe_id, generated_universe = create_universe(config)
+        universe_id, generated_universe = create_universe(config, creator_id=username, darkforest=darkforest)
         created = {"value": False}
 
         def create(root: Any):
@@ -135,3 +144,48 @@ def enter_universe_for_user(username: Any, universe_id: Any, config: UniverseGen
     root_reference().transaction(enter)
     membership = result["membership"]
     return UniverseEntryResult(universe_id, bool(result["onboarded"]), membership["star_id"], membership["ship_ids"])
+
+
+def enter_universe_from_invite(guest_user_id: Any, universe_id: Any, config: UniverseGenerationConfig) -> UniverseInviteResult:
+    """Create/reuse a pending guest identity and onboard it into one normal universe."""
+    if not isinstance(universe_id, str) or not universe_id:
+        raise AuthenticationError("A universe ID is required.")
+    user_id = guest_user_id if isinstance(guest_user_id, str) and GUEST_USER_PATTERN.fullmatch(guest_user_id) else f"guest_user_{uuid.uuid4().hex}"
+    result: dict[str, Any] = {}
+
+    def enter(root: Any):
+        if not isinstance(root, dict):
+            raise AuthenticationError("Database is unavailable.")
+        users, universes = root.setdefault("users", {}), root.get("universes")
+        if not isinstance(users, dict) or not isinstance(universes, dict):
+            raise AuthenticationError("Database is unavailable.")
+        universe = universes.get(universe_id)
+        if not isinstance(universe, dict):
+            raise AuthenticationError("Universe does not exist.")
+        if universe.get("career") is True:
+            raise AuthenticationError("Career universes use their dedicated invite link.")
+        user = users.get(user_id)
+        if user is None:
+            user = new_pending_human_user()
+            users[user_id] = user
+        if not isinstance(user, dict):
+            raise AuthenticationError("Guest identity is unavailable.")
+        memberships = user.setdefault("universe_memberships", {})
+        if not isinstance(memberships, dict):
+            memberships = {}
+            user["universe_memberships"] = memberships
+        existing = memberships.get(universe_id)
+        if isinstance(existing, dict) and existing.get("onboarded") is True:
+            result.update(onboarded=False, membership=existing)
+            return root
+        try:
+            membership = onboard_user(universe, user_id, config, float(universe.get("time", 0)))
+        except OnboardingError as error:
+            raise AuthenticationError(str(error)) from error
+        memberships[universe_id] = membership
+        result.update(onboarded=True, membership=membership)
+        return root
+
+    root_reference().transaction(enter)
+    membership = result["membership"]
+    return UniverseInviteResult(universe_id, bool(result["onboarded"]), membership["star_id"], membership["ship_ids"], user_id)

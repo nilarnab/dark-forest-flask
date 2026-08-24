@@ -18,6 +18,7 @@ Firebase path: `universes/{universeId}`
 | Field | Type | Description |
 | --- | --- | --- |
 | `active` | boolean | Must be explicitly `true` for Flask and the UI to simulate/predict this universe. `false` or missing pauses it. |
+| `creator_id` | string, optional | User ID of the regular shared-universe host. Only this user can start/pause the match or see its normal invite link. |
 | `time` | number | Authoritative simulation time in seconds at the last stored update. |
 | `time_updated_at_ms` | number | Wall-clock timestamp in milliseconds used to analytically estimate continuous simulation time. |
 | `objects` | map | Object ID → universe object. |
@@ -71,7 +72,11 @@ subtype for generated stars.
 ## Generated universes
 
 `POST /auth/universe/new` creates a random-ID universe with generated natural
-stars. Its configuration is environment-driven:
+stars. The creator selects whether `darkforest` is enabled (it defaults to `true`). A regular generated universe starts with `active: false`; its
+`creator_id` can start the shared clock using `POST /universes/{universeId}/active`.
+The same creator can share `/invite/universe/{universeId}`; invitees receive a
+pending `guest_user_<uuid>` identity and are onboarded directly into that
+existing universe. Its configuration is environment-driven:
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |

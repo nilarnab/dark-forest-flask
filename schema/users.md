@@ -25,7 +25,7 @@ as the key; new career invite identities use a stable `guest_user_<uuid>` key.
 never stored in Firebase. `type` may be `HUMAN` or `AGENT`; browser signup
 always creates `HUMAN` users.
 
-An invite-created career player is still `type: HUMAN`, but starts with
+An invite-created career or regular-universe guest is still `type: HUMAN`, but starts with
 `registration_state: PENDING`, `username: null`, and `password: null` until
 they choose to save their progress. `career_universe` points to that player's
 single personal campaign universe.
@@ -35,14 +35,14 @@ for the client's “Your Universes” list. The client may read only
 `users/{username}/universe_memberships`, never the parent user record
 containing the password hash.
 
-On the first successful `POST /auth/universe/enter`, Flask atomically claims
+On the first successful `POST /auth/universe/enter` (or normal invite entry), Flask atomically claims
 one generated star for that user and creates the configured starter ships and
 their mounted guns. Re-entering the same universe returns the existing
 membership and never assigns a second set of assets.
 
-`POST /auth/universe/new` creates an initial universe record with its stored
+`POST /auth/universe/new` creates an initially paused universe record with its stored
 starter-asset configuration:
 
 ```json
-{ "active": true, "time": 0, "objects": {}, "spawn_config": {} }
+{ "creator_id": "pilot_01", "active": false, "time": 0, "objects": {}, "spawn_config": {} }
 ```

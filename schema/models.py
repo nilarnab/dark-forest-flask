@@ -76,6 +76,7 @@ class UniverseEvent(TypedDict, total=False):
 
 class UniverseRecord(TypedDict, total=False):
     name: str
+    creator_id: str
     active: bool
     career: bool
     darkforest: bool

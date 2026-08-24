@@ -24,14 +24,17 @@ def new_agent_user(agent_name: str) -> UserRecord:
     return {"username": agent_name, "type": "AGENT", "registration_state": "COMPLETE", "career_universe": None, "universe_memberships": {}}
 
 
-def new_empty_universe(spawn_config: SpawnConfig) -> UniverseRecord:
-    return {
-        "active": True,
+def new_empty_universe(spawn_config: SpawnConfig, creator_id: str | None = None, active: bool = True) -> UniverseRecord:
+    universe: UniverseRecord = {
+        "active": active,
         "time": 0,
         "time_updated_at_ms": time.time() * 1000,
         "objects": {},
         "spawn_config": spawn_config,
     }
+    if creator_id is not None:
+        universe["creator_id"] = creator_id
+    return universe
 
 
 def new_star(location: Position, life: float, border_radius: float) -> UniverseObject:

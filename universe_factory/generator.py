@@ -13,10 +13,20 @@ class UniverseGenerationError(ValueError):
     pass
 
 
-def create_universe(config: UniverseGenerationConfig, seed: int | None = None) -> tuple[str, UniverseRecord]:
+def create_universe(
+    config: UniverseGenerationConfig,
+    seed: int | None = None,
+    creator_id: str | None = None,
+    darkforest: bool = True,
+) -> tuple[str, UniverseRecord]:
     """Create a random-ID universe populated with procedurally placed stars."""
     rng = random.Random(seed)
-    universe = new_empty_universe(spawn_config(config))
+    # A regular shared universe starts paused. Its creator explicitly starts
+    # the shared analytic clock after participants have joined.
+    universe = new_empty_universe(spawn_config(config), creator_id=creator_id, active=False)
+    # In Dark Forest matches stars remain visible, while enemy ownership,
+    # health, ships, and active paths require radar contact in the client.
+    universe["darkforest"] = darkforest
     [create_star(universe, location, config.star_life, config.star_border_radius) for location in generate_star_locations(config, rng)]
     # A short numeric code is easy to share and use in the universe picker.
     # Creation still verifies that the code is unused in its Firebase

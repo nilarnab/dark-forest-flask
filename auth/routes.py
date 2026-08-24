@@ -4,7 +4,7 @@ import time
 
 from flask import Blueprint, current_app, jsonify, request
 
-from auth.service import AuthenticationError, authenticate_human, create_universe_for_user, enter_universe_for_user
+from auth.service import AuthenticationError, authenticate_human, create_universe_for_user, enter_universe_for_user, enter_universe_from_invite
 from career.service import CareerInviteError, create_or_resume_level_one_invite
 
 
@@ -52,7 +52,7 @@ def create_universe():
     payload = request.get_json(silent=True) or {}
     try:
         config = current_app.config["universe_generation"].with_options(payload.get("options"))
-        result = create_universe_for_user(payload.get("username"), config)
+        result = create_universe_for_user(payload.get("username"), config, payload.get("darkforest", True))
     except (AuthenticationError, ValueError) as error:
         return jsonify({"ok": False, "error": str(error)}), 400
     return jsonify({"ok": True, "universe_id": result.universe_id}), 201
@@ -66,6 +66,26 @@ def enter_universe():
     except AuthenticationError as error:
         return jsonify({"ok": False, "error": str(error)}), 400
     return jsonify({"ok": True, "universe_id": result.universe_id, "onboarded": result.onboarded, "star_id": result.star_id, "ship_ids": result.ship_ids})
+
+
+@auth_blueprint.post("/universe/invite/enter")
+def enter_universe_invite():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enter_universe_from_invite(
+            payload.get("guest_user_id"), payload.get("universe_id"),
+            current_app.config["universe_generation"],
+        )
+    except AuthenticationError as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({
+        "ok": True,
+        "user_id": result.user_id,
+        "universe_id": result.universe_id,
+        "onboarded": result.onboarded,
+        "star_id": result.star_id,
+        "ship_ids": result.ship_ids,
+    }), 201 if result.onboarded else 200
 
 
 @auth_blueprint.post("/universe/heartbeat")

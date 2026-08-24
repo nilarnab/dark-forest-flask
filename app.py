@@ -72,6 +72,36 @@ def create_app() -> Flask:
     def health():
         return jsonify({"ok": True, "tick_seconds": settings.tick_seconds})
 
+    @app.post("/universes/<universe_id>/active")
+    def set_universe_active(universe_id: str):
+        """Start or pause a regular shared universe at its exact current time."""
+        payload = request.get_json(silent=True) or {}
+        username, active = payload.get("username"), payload.get("active")
+        if not isinstance(username, str) or not isinstance(active, bool):
+            return jsonify({"ok": False, "error": "username and boolean active are required."}), 400
+
+        def update(universe):
+            if not isinstance(universe, dict):
+                raise TransferError("Universe does not exist.")
+            if universe.get("career") is True:
+                raise TransferError("Career universe state is controlled by its tutorial.")
+            if universe.get("creator_id") != username:
+                raise TransferError("Only the universe creator can start or pause this match.")
+            now_ms = time.time() * 1000
+            checkpoint = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+            universe["time"] = checkpoint
+            universe["time_updated_at_ms"] = now_ms
+            universe["active"] = active
+            return universe
+
+        try:
+            updated = repository.transaction_universe(universe_id, update)
+        except TransferError as error:
+            return jsonify({"ok": False, "error": str(error)}), 403
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        return jsonify({"ok": True, "active": updated.get("active") is True, "time": updated.get("time")})
+
     @app.post("/simulation/tick")
     def single_tick():
         """Useful for local testing. Production ticks should use worker.py."""
