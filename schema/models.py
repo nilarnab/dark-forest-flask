@@ -37,6 +37,9 @@ class GunAttachment(TypedDict):
     type: Literal["GUN"]
     velocity: float
     hit_radius: float
+    range: float
+    cooldown_seconds: float
+    last_fired_at: float
 
 
 class UniverseObject(TypedDict, total=False):
@@ -98,6 +101,8 @@ class SpawnConfig(TypedDict):
     ship_orbit_velocity: float
     gun_velocity: float
     gun_hit_radius: float
+    gun_range: float
+    radar_radius: float
     star_life: float
     ship_life: float
     star_border_radius: float

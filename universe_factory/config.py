@@ -17,6 +17,8 @@ class UniverseGenerationConfig:
     ship_orbit_velocity: float = 20
     gun_velocity: float = 300
     gun_hit_radius: float = 20
+    gun_range: float = 400
+    radar_radius: float = 300
     star_life: float = 1000
     ship_life: float = 200
     star_border_radius: float = 2
@@ -36,6 +38,8 @@ class UniverseGenerationConfig:
             ship_orbit_velocity=float(os.getenv("UNIVERSE_SHIP_ORBIT_VELOCITY", "20")),
             gun_velocity=float(os.getenv("UNIVERSE_GUN_VELOCITY", "300")),
             gun_hit_radius=float(os.getenv("UNIVERSE_GUN_HIT_RADIUS", "20")),
+            gun_range=float(os.getenv("UNIVERSE_GUN_RANGE", "400")),
+            radar_radius=float(os.getenv("UNIVERSE_RADAR_RADIUS", "300")),
             star_life=float(os.getenv("UNIVERSE_STAR_LIFE", "1000")),
             ship_life=float(os.getenv("UNIVERSE_SHIP_LIFE", "200")),
             star_border_radius=float(os.getenv("UNIVERSE_STAR_BORDER_RADIUS", "2")),
@@ -51,11 +55,20 @@ class UniverseGenerationConfig:
             raise ValueError("Generation options must be an object.")
         star_count = options.get("star_count", self.star_count)
         ship_count = options.get("ship_count", self.ship_count)
+        gun_range = options.get("gun_range", self.gun_range)
+        radar_radius = options.get("radar_radius", self.radar_radius)
         if isinstance(star_count, bool) or not isinstance(star_count, int):
             raise ValueError("star_count must be a whole number.")
         if isinstance(ship_count, bool) or not isinstance(ship_count, int):
             raise ValueError("ship_count must be a whole number.")
-        config = UniverseGenerationConfig(**{**self.__dict__, "star_count": star_count, "ship_count": ship_count})
+        if isinstance(gun_range, bool) or not isinstance(gun_range, (int, float)):
+            raise ValueError("gun_range must be a number.")
+        if isinstance(radar_radius, bool) or not isinstance(radar_radius, (int, float)):
+            raise ValueError("radar_radius must be a number.")
+        config = UniverseGenerationConfig(**{
+            **self.__dict__, "star_count": star_count, "ship_count": ship_count,
+            "gun_range": float(gun_range), "radar_radius": float(radar_radius),
+        })
         config.validate()
         return config
 
@@ -68,7 +81,7 @@ class UniverseGenerationConfig:
             raise ValueError("UNIVERSE_STAR_PLACEMENT_ATTEMPTS must be at least 1.")
         if not 0 <= self.ship_count <= self.ship_count_max:
             raise ValueError(f"ship_count must be between 0 and {self.ship_count_max}.")
-        if self.ship_orbit_radius <= 0 or self.ship_orbit_velocity <= 0 or self.gun_velocity <= 0 or self.gun_hit_radius <= 0:
+        if self.ship_orbit_radius <= 0 or self.ship_orbit_velocity <= 0 or self.gun_velocity <= 0 or self.gun_hit_radius <= 0 or self.gun_range <= 0 or self.radar_radius <= 0:
             raise ValueError("Starter ship and gun settings must be positive.")
         if self.star_life < 0 or self.ship_life < 0:
             raise ValueError("Starter object life values cannot be negative.")

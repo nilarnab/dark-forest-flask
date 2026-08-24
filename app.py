@@ -346,10 +346,13 @@ def create_app() -> Flask:
         gun_id = payload.get("gun_id")
         rotation = payload.get("rotation")
         client_fired_at = payload.get("client_fired_at")
+        client_shot_id = payload.get("client_shot_id")
         if not isinstance(object_id, str) or not isinstance(gun_id, str) or rotation is None:
             return jsonify({"ok": False, "error": "JSON must include objectid, gun_id, and rotation."}), 400
         if client_fired_at is not None and not isinstance(client_fired_at, (int, float)):
             return jsonify({"ok": False, "error": "client_fired_at must be a numeric simulation time."}), 400
+        if client_shot_id is not None and (not isinstance(client_shot_id, str) or len(client_shot_id) > 128):
+            return jsonify({"ok": False, "error": "client_shot_id must be a short string."}), 400
         try:
             universe = repository.get_universe(universe_id)
             read_completed_at = time.perf_counter()
@@ -364,6 +367,7 @@ def create_app() -> Flask:
                 projectile_blast_impact=settings.projectile_blast_impact,
                 projectile_retention_seconds=settings.projectile_retention_seconds,
                 client_fired_at=float(client_fired_at) if client_fired_at is not None else None,
+                client_shot_id=client_shot_id,
                 client_fire_time_tolerance_seconds=settings.client_fire_time_tolerance_seconds,
             )
             prepared_at = time.perf_counter()

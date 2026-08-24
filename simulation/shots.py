@@ -28,6 +28,7 @@ def prepare_shot(
     projectile_blast_impact: float,
     projectile_retention_seconds: float,
     client_fired_at: float | None = None,
+    client_shot_id: str | None = None,
     client_fire_time_tolerance_seconds: float = 0,
     now_ms: float | None = None,
 ) -> PreparedShot:
@@ -46,6 +47,12 @@ def prepare_shot(
         raise ProjectileError("The selected GUN needs a positive numeric velocity.")
     if not isinstance(hit_radius, (int, float)) or hit_radius <= 0:
         raise ProjectileError("The selected GUN needs a positive numeric hit_radius.")
+    gun_range = gun.get("range", projectile_range)
+    if not isinstance(gun_range, (int, float)) or gun_range <= 0:
+        raise ProjectileError("The selected GUN needs a positive numeric range.")
+    cooldown_seconds = gun.get("cooldown_seconds", 1)
+    if not isinstance(cooldown_seconds, (int, float)) or cooldown_seconds < 0:
+        raise ProjectileError("The selected GUN needs a non-negative numeric cooldown_seconds.")
 
     resolved_now_ms = time.time() * 1000 if now_ms is None else now_ms
     if not isinstance(universe.get("time_updated_at_ms"), (int, float)):
@@ -59,6 +66,10 @@ def prepare_shot(
         )
     if fired_at < float(universe.get("time", 0)):
         raise ProjectileError("CLIENT TIME REJECTED: supplied time predates the authoritative universe state.")
+    last_fired_at = gun.get("last_fired_at")
+    if isinstance(last_fired_at, (int, float)) and fired_at < last_fired_at + float(cooldown_seconds):
+        remaining = last_fired_at + float(cooldown_seconds) - fired_at
+        raise ProjectileError(f"GUN RECHARGING: ready in {remaining:.1f}s.")
 
     firing_ship = dict(ship)
     firing_position = position_for_object_at_time(ship, universe["objects"], fired_at)
@@ -66,11 +77,13 @@ def prepare_shot(
         firing_ship["location"] = firing_position
     projectile_id = f"projectile_{uuid.uuid4().hex}"
     projectile = build_projectile(
-        firing_ship, fired_at, rotation, float(velocity), projectile_range,
+        firing_ship, fired_at, rotation, float(velocity), float(gun_range),
         source_objectid=object_id, hit_radius=float(hit_radius),
         blast_impact=projectile_blast_impact,
         retention_seconds=projectile_retention_seconds,
     )
+    if client_shot_id:
+        projectile["client_shot_id"] = client_shot_id
     fire_event = {
         "type": "PROJECTILE_FIRED",
         "projectile_id": projectile_id,
@@ -80,7 +93,8 @@ def prepare_shot(
         "rotation": float(rotation),
         "velocity": float(velocity),
         "hit_radius": float(hit_radius),
-        "range": projectile_range,
+        "range": float(gun_range),
+        "client_shot_id": client_shot_id,
     }
     return PreparedShot(
         projectile_id=projectile_id,
@@ -90,5 +104,6 @@ def prepare_shot(
             f"universes/{universe_id}/events/fire_{projectile_id}": fire_event,
             f"universes/{universe_id}/time": server_time,
             f"universes/{universe_id}/time_updated_at_ms": resolved_now_ms,
+            f"universes/{universe_id}/objects/{object_id}/objects/{gun_id}/last_fired_at": fired_at,
         },
     )

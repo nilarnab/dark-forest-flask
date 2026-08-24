@@ -80,8 +80,11 @@ def new_ship(location: Position, focus1: str, orbit_radius: float, phase: float,
     }
 
 
-def new_gun(velocity: float, hit_radius: float) -> dict:
-    return {"type": "GUN", "velocity": velocity, "hit_radius": hit_radius}
+def new_gun(velocity: float, hit_radius: float, gun_range: float | None = None, cooldown_seconds: float = 1) -> dict:
+    gun = {"type": "GUN", "velocity": velocity, "hit_radius": hit_radius, "cooldown_seconds": cooldown_seconds}
+    if gun_range is not None:
+        gun["range"] = gun_range
+    return gun
 
 
 def new_radar(radius: float) -> dict:

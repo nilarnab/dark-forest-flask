@@ -76,7 +76,7 @@ def create_ship(
     return ship_id
 
 
-def mount_gun(universe: UniverseRecord, ship_id: str, velocity: float, hit_radius: float, gun_id: str | None = None) -> str:
+def mount_gun(universe: UniverseRecord, ship_id: str, velocity: float, hit_radius: float, gun_range: float | None = None, gun_id: str | None = None) -> str:
     ship = universe.setdefault("objects", {}).get(ship_id)
     if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL":
         raise UniverseGenerationError(f"Cannot mount gun on unknown ship: {ship_id}")
@@ -84,17 +84,17 @@ def mount_gun(universe: UniverseRecord, ship_id: str, velocity: float, hit_radiu
     attached_id = gun_id or f"gun_{uuid.uuid4().hex}"
     if attached_id in attachments:
         raise UniverseGenerationError(f"Attached object ID already exists: {attached_id}")
-    attachments[attached_id] = new_gun(velocity, hit_radius)
+    attachments[attached_id] = new_gun(velocity, hit_radius, gun_range)
     return attached_id
 
 
-def mount_radar(universe: UniverseRecord, ship_id: str, radius: float, radar_id: str | None = None) -> str:
-    ship = universe.setdefault("objects", {}).get(ship_id)
-    if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL":
-        raise UniverseGenerationError(f"Cannot mount radar on unknown ship: {ship_id}")
+def mount_radar(universe: UniverseRecord, object_id: str, radius: float, radar_id: str | None = None) -> str:
+    owner = universe.setdefault("objects", {}).get(object_id)
+    if not isinstance(owner, dict) or owner.get("type") not in {"ARTIFICIAL", "NATURAL"}:
+        raise UniverseGenerationError(f"Cannot mount radar on unknown object: {object_id}")
     if radius <= 0:
         raise UniverseGenerationError("Radar radius must be positive.")
-    attachments = ship.setdefault("objects", {})
+    attachments = owner.setdefault("objects", {})
     attached_id = radar_id or f"radar_{uuid.uuid4().hex}"
     if attached_id in attachments:
         raise UniverseGenerationError(f"Attached object ID already exists: {attached_id}")
@@ -143,6 +143,8 @@ def spawn_config(config: UniverseGenerationConfig) -> dict:
         "ship_orbit_velocity": config.ship_orbit_velocity,
         "gun_velocity": config.gun_velocity,
         "gun_hit_radius": config.gun_hit_radius,
+        "gun_range": config.gun_range,
+        "radar_radius": config.radar_radius,
         "star_life": config.star_life,
         "ship_life": config.ship_life,
         "star_border_radius": config.star_border_radius,

@@ -89,13 +89,18 @@ existing universe. Its configuration is environment-driven:
 | `UNIVERSE_SHIP_LIFE` | `200` | Initial life of each generated starter ship. |
 | `UNIVERSE_STAR_BORDER_RADIUS` | `2` | Default physical collision radius of each generated star. |
 | `UNIVERSE_SHIP_BORDER_RADIUS` | `2` | Default physical collision radius of each generated starter ship. |
+| `UNIVERSE_GUN_RANGE` | `400` | Default travel range captured on each generated starter gun. |
+| `UNIVERSE_RADAR_RADIUS` | `300` | Default radar range captured on each assigned starter star; each starter ship receives half this range. |
 
 On a user's first entry, Flask atomically assigns an unowned natural star and
 creates the requested number of owned `cruise_level_1` starter ships (maximum
-`3`). The first player receives a random outer/corner star; later players are
-assigned randomly from the five unowned stars farthest from already owned
-stars. Each ship starts on a circular orbit around the assigned star and
-receives one `GUN` using the captured default velocity and hit radius.
+`3`). The first player receives any random unowned star; later players are
+assigned randomly from the farthest 50% of unowned stars, measured from their
+nearest already-owned star. Each ship starts on a circular orbit around the assigned star and
+receives one `GUN` using the captured default velocity, hit radius, and range.
+The assigned star receives a radar at the configured range, and each assigned
+starter ship receives a radar at half that range. Guns have a one-second
+per-gun recharge, stored as `last_fired_at` after firing.
 For `N` starter ships, their radii are evenly distributed from the centre to
 `UNIVERSE_SHIP_ORBIT_RADIUS`: `base × 1/N` through `base × N/N`.
 
