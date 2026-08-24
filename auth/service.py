@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,7 +149,12 @@ def enter_universe_from_invite(guest_user_id: Any, universe_id: Any, config: Uni
     """Create/reuse a pending guest identity and onboard it into one normal universe."""
     if not isinstance(universe_id, str) or not universe_id:
         raise AuthenticationError("A universe ID is required.")
-    user_id = guest_user_id if isinstance(guest_user_id, str) and GUEST_USER_PATTERN.fullmatch(guest_user_id) else f"guest_user_{uuid.uuid4().hex}"
+    # The browser allocates and persists this ID before it sends the request.
+    # Never silently manufacture a replacement here: a retried request with a
+    # missing ID would otherwise be interpreted as a brand-new player.
+    if not isinstance(guest_user_id, str) or not GUEST_USER_PATTERN.fullmatch(guest_user_id):
+        raise AuthenticationError("A valid invitation guest identity is required.")
+    user_id = guest_user_id
     result: dict[str, Any] = {}
 
     def enter(root: Any):

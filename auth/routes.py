@@ -71,13 +71,19 @@ def enter_universe():
 @auth_blueprint.post("/universe/invite/enter")
 def enter_universe_invite():
     payload = request.get_json(silent=True) or {}
+    started_at = time.perf_counter()
     try:
         result = enter_universe_from_invite(
             payload.get("guest_user_id"), payload.get("universe_id"),
             current_app.config["universe_generation"],
         )
     except AuthenticationError as error:
+        current_app.logger.warning("UNIVERSE INVITE rejected universe=%r guest=%r after %.3fs: %s", payload.get("universe_id"), payload.get("guest_user_id"), time.perf_counter() - started_at, error)
         return jsonify({"ok": False, "error": str(error)}), 400
+    current_app.logger.info(
+        "UNIVERSE INVITE joined universe=%s guest=%s onboarded=%s in %.3fs",
+        result.universe_id, result.user_id, result.onboarded, time.perf_counter() - started_at,
+    )
     return jsonify({
         "ok": True,
         "user_id": result.user_id,
