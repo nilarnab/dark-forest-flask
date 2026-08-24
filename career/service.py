@@ -51,43 +51,29 @@ def create_or_resume_level_one_invite(
             return CareerInviteResult(user_id=user_id, universe_id=existing_universe_id, created=False)
 
     previous_universe_id = existing.get("career_universe") if reset_existing and isinstance(existing, dict) else None
+    agent_user = users_reference.child(AGENT_USER_ID).get()
     for _ in range(20):
         universe_id, universe, membership = create_level_one_universe(user_id, universe_config, career_config)
-        def claim(current: Any):
-            return universe if current is None else current
-        claimed = universes_reference.child(universe_id).transaction(claim)
-        if not isinstance(claimed, dict) or claimed.get("career_owner") != user_id:
+        # Universe ids are only four digits, so keep the small collision
+        # check—but avoid a full-universe transaction.  A Level 1 reset used
+        # to make four sequential Firebase transactions, which can stall for
+        # several seconds on Render while any transaction retries.
+        if universes_reference.child(universe_id).get() is not None:
             continue
 
-        chosen = {"universe_id": universe_id, "created": True}
-        def attach(current: Any):
-            user = current if isinstance(current, dict) else new_pending_human_user()
-            current_universe_id = user.get("career_universe")
-            if not reset_existing and isinstance(current_universe_id, str):
-                chosen.update(universe_id=current_universe_id, created=False)
-                return user
-            memberships = user.setdefault("universe_memberships", {})
-            if not isinstance(memberships, dict):
-                memberships = {}
-                user["universe_memberships"] = memberships
-            if isinstance(current_universe_id, str):
-                memberships.pop(current_universe_id, None)
-            user["career_universe"] = universe_id
-            memberships[universe_id] = membership
-            return user
-        users_reference.child(user_id).transaction(attach)
-        users_reference.child(AGENT_USER_ID).transaction(lambda current: current if isinstance(current, dict) else new_agent_user(AGENT_USER_ID))
-        if chosen["universe_id"] != universe_id:
-            universes_reference.child(universe_id).delete()
-            existing_universe = universes_reference.child(str(chosen["universe_id"])).get()
-            if isinstance(existing_universe, dict):
-                ensure_level_one_star_count(existing_universe, universe_config, career_config)
-                ensure_level_one_ship_radars(existing_universe, career_config)
-                universes_reference.child(str(chosen["universe_id"])).set(existing_universe)
-            return CareerInviteResult(user_id=user_id, universe_id=str(chosen["universe_id"]), created=False)
+        updates: dict[str, Any] = {
+            f"universes/{universe_id}": universe,
+            f"users/{user_id}/career_universe": universe_id,
+            f"users/{user_id}/universe_memberships/{universe_id}": membership,
+        }
+        if not isinstance(agent_user, dict):
+            updates[f"users/{AGENT_USER_ID}"] = new_agent_user(AGENT_USER_ID)
         if isinstance(previous_universe_id, str) and previous_universe_id != universe_id:
-            # The new career pointer is already committed. Removing the old
-            # personal universe afterward cannot strand this guest.
-            universes_reference.child(previous_universe_id).delete()
+            # Creation, pointer swap, and old-universe deletion are one
+            # atomic Firebase update; no follow-up request can leave the UI
+            # waiting after the new career is already ready.
+            updates[f"users/{user_id}/universe_memberships/{previous_universe_id}"] = None
+            updates[f"universes/{previous_universe_id}"] = None
+        root_reference().update(updates)
         return CareerInviteResult(user_id=user_id, universe_id=universe_id, created=True)
     raise CareerInviteError("Could not allocate a Level 1 universe. Please retry.")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from flask import Blueprint, current_app, jsonify, request
 
 from auth.service import AuthenticationError, authenticate_human, create_universe_for_user, enter_universe_for_user
@@ -12,6 +14,7 @@ auth_blueprint = Blueprint("auth", __name__, url_prefix="/auth")
 @auth_blueprint.post("/career/invite/level1")
 def enter_level_one_invite():
     payload = request.get_json(silent=True) or {}
+    started_at = time.perf_counter()
     try:
         result = create_or_resume_level_one_invite(
             payload.get("guest_user_id"),
@@ -20,7 +23,12 @@ def enter_level_one_invite():
             reset_existing=payload.get("reset") is True,
         )
     except (CareerInviteError, ValueError) as error:
+        current_app.logger.warning("LEVEL1 invite rejected after %.3fs: %s", time.perf_counter() - started_at, error)
         return jsonify({"ok": False, "error": str(error)}), 400
+    current_app.logger.info(
+        "LEVEL1 invite completed in %.3fs (created=%s universe=%s).",
+        time.perf_counter() - started_at, result.created, result.universe_id,
+    )
     return jsonify({"ok": True, "user_id": result.user_id, "universe_id": result.universe_id, "created": result.created}), 201 if result.created else 200
 
 

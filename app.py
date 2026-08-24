@@ -23,10 +23,12 @@ from simulation.universe import apply_client_reported_projectile_hit, apply_proj
 from simulation.transfer import ManeuverBlockedError, TransferError, apply_transfer_plan, build_transfer_plan
 from universe_factory.config import UniverseGenerationConfig
 from career.config import CareerGenerationConfig
+from observability import initialize_sentry
 
 
 def create_app() -> Flask:
     settings = Settings.from_environment()
+    initialize_sentry()
     initialize_firebase(settings)
     repository = UniverseRepository()
     activity = UniverseActivityTracker(settings.universe_activity_timeout_seconds)
@@ -60,7 +62,9 @@ def create_app() -> Flask:
         if origin in settings.cors_allowed_origins:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        # Browser tracing attaches these two headers to calls that should be
+        # linked to the corresponding Flask transaction in Sentry.
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, sentry-trace, baggage"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
 
