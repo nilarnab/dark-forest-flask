@@ -25,6 +25,7 @@ class AuthenticationResult:
     username: str
     account_type: str
     action: str
+    career_universe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class UniverseInviteResult(UniverseEntryResult):
     user_id: str
 
 
-def authenticate_human(username: Any, password: Any) -> AuthenticationResult:
+def authenticate_human(username: Any, password: Any, guest_user_id: Any = None) -> AuthenticationResult:
     """Log an existing human in, or atomically create a new human account."""
     if not isinstance(username, str) or not USERNAME_PATTERN.fullmatch(username):
         raise AuthenticationError("Username must be 3–32 characters using letters, numbers, _ or -.")
@@ -71,7 +72,65 @@ def authenticate_human(username: Any, password: Any) -> AuthenticationResult:
         return existing
 
     root_reference().child("users").child(username).transaction(authenticate)
+    career_universe = claim_guest_career_progress(username, guest_user_id)
+    result["career_universe"] = career_universe
     return AuthenticationResult(**result)
+
+
+def claim_guest_career_progress(username: str, guest_user_id: Any) -> str | None:
+    """Atomically attach this browser's completed/in-progress guest career to its account.
+
+    This runs only immediately after the username/password authentication has
+    succeeded.  It avoids leaving a guest-owned career invisible on the
+    account's career screen, while retaining every existing object and its
+    state in the same universe.
+    """
+    if not isinstance(guest_user_id, str) or not GUEST_USER_PATTERN.fullmatch(guest_user_id):
+        return None
+    claimed: dict[str, str] = {}
+
+    def claim(root: Any):
+        if not isinstance(root, dict):
+            return root
+        users = root.get("users")
+        universes = root.get("universes")
+        if not isinstance(users, dict) or not isinstance(universes, dict):
+            return root
+        account = users.get(username)
+        guest = users.get(guest_user_id)
+        if not isinstance(account, dict) or not isinstance(guest, dict):
+            return root
+        universe_id = guest.get("career_universe")
+        universe = universes.get(universe_id) if isinstance(universe_id, str) else None
+        if not isinstance(universe, dict) or universe.get("career") is not True or universe.get("career_owner") != guest_user_id:
+            return root
+        existing_career = account.get("career_universe")
+        if isinstance(existing_career, str) and existing_career != universe_id:
+            # Never replace an account's existing career save implicitly.
+            return root
+        membership = guest.get("universe_memberships", {}).get(universe_id) if isinstance(guest.get("universe_memberships"), dict) else None
+        if not isinstance(membership, dict):
+            return root
+        universe["career_owner"] = username
+        participants = universe.get("participants")
+        if isinstance(participants, dict):
+            participants.pop(guest_user_id, None)
+            participants[username] = {"type": "HUMAN"}
+        objects = universe.get("objects")
+        if isinstance(objects, dict):
+            for object_data in objects.values():
+                if isinstance(object_data, dict) and object_data.get("owner") == guest_user_id:
+                    object_data["owner"] = username
+        memberships = account.setdefault("universe_memberships", {})
+        if isinstance(memberships, dict):
+            memberships[universe_id] = membership
+        account["career_universe"] = universe_id
+        users.pop(guest_user_id, None)
+        claimed["universe_id"] = universe_id
+        return root
+
+    root_reference().transaction(claim)
+    return claimed.get("universe_id")
 
 
 def create_universe_for_user(username: Any, config: UniverseGenerationConfig, darkforest: Any = True) -> UniverseCreationResult:

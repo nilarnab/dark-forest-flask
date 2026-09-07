@@ -4,6 +4,7 @@ import unittest
 
 from career.config import CareerGenerationConfig
 from career.levels.level_1 import AGENT_USER_ID, create_level_one_universe
+from career.levels.level_2 import create_level_two_universe
 from universe_factory.config import UniverseGenerationConfig
 from universe_factory.generator import create_universe, generate_star_locations
 from universe_factory.onboarding import onboard_user
@@ -86,3 +87,19 @@ class UniverseFactoryTests(unittest.TestCase):
             if object_data.get("type") != "ARTIFICIAL":
                 continue
             self.assertTrue(any(attached.get("type") == "RADAR" and attached.get("radius") == 250 for attached in object_data["objects"].values()))
+
+    def test_level_two_waits_for_its_opening_briefing(self):
+        career = CareerGenerationConfig(
+            level_one_star_count=5,
+            level_one_radar_radius=500,
+            level_one_enemy_orbit_radius=120,
+            level_one_near_miss_distance=50,
+            level_one_player_orbit_radius=150,
+            level_one_enemy_orbit_velocity=20,
+        )
+        _, universe, _ = create_level_two_universe("pilot_01", self.config, career, seed=123)
+        briefing = universe["career_state"]["opening_briefing"]
+        self.assertFalse(universe["active"])
+        self.assertFalse(briefing["completed"])
+        self.assertEqual(briefing["step"], 0)
+        self.assertIn("NOT IN ORBIT", briefing["messages"][0])

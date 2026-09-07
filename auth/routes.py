@@ -6,6 +6,8 @@ from flask import Blueprint, current_app, jsonify, request
 
 from auth.service import AuthenticationError, authenticate_human, create_universe_for_user, enter_universe_for_user, enter_universe_from_invite
 from career.service import CareerInviteError, create_or_resume_level_one_invite
+from auth.tokens import authenticated_username, issue_login_token
+from career.service import create_or_resume_level_two_invite
 
 
 auth_blueprint = Blueprint("auth", __name__, url_prefix="/auth")
@@ -21,6 +23,7 @@ def enter_level_one_invite():
             current_app.config["universe_generation"],
             current_app.config["career_generation"],
             reset_existing=payload.get("reset") is True,
+            account_user_id=payload.get("username"),
         )
     except (CareerInviteError, ValueError) as error:
         current_app.logger.warning("LEVEL1 invite rejected after %.3fs: %s", time.perf_counter() - started_at, error)
@@ -36,7 +39,7 @@ def enter_level_one_invite():
 def login_or_signup():
     payload = request.get_json(silent=True) or {}
     try:
-        result = authenticate_human(payload.get("username"), payload.get("password"))
+        result = authenticate_human(payload.get("username"), payload.get("password"), payload.get("guest_user_id"))
     except AuthenticationError as error:
         return jsonify({"ok": False, "error": str(error)}), 401
     return jsonify({
@@ -44,7 +47,25 @@ def login_or_signup():
         "action": result.action,
         "username": result.username,
         "type": result.account_type,
+        "career_universe": result.career_universe,
+        "auth_token": issue_login_token(result.username, current_app.config["settings"].auth_token_secret),
     }), 201 if result.action == "signup" else 200
+
+
+@auth_blueprint.post("/career/invite/level2")
+def enter_level_two_invite():
+    payload = request.get_json(silent=True) or {}
+    username = authenticated_username(request.headers.get("Authorization"), current_app.config["settings"].auth_token_secret)
+    if username is None:
+        return jsonify({"ok": False, "error": "Login required to enter Level 2."}), 401
+    try:
+        result = create_or_resume_level_two_invite(
+            username, current_app.config["universe_generation"], current_app.config["career_generation"],
+            reset_existing=payload.get("reset") is True,
+        )
+    except (CareerInviteError, ValueError) as error:
+        return jsonify({"ok": False, "error": str(error)}), 400
+    return jsonify({"ok": True, "universe_id": result.universe_id, "created": result.created}), 201 if result.created else 200
 
 
 @auth_blueprint.post("/universe/new")

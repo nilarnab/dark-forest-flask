@@ -58,8 +58,10 @@ def verify_and_apply_collision(
     }
     if first_after <= 0:
         preserve_dead_star(objects, first_id)
+        schedule_star_death_blast(objects, first_id, hit_time)
     if second_after <= 0:
         preserve_dead_star(objects, second_id)
+        schedule_star_death_blast(objects, second_id, hit_time)
     return {
         "status": "confirmed",
         "distance": distance,
@@ -92,3 +94,17 @@ def preserve_dead_star(objects: dict[str, Any], object_id: str) -> None:
         object_data["life"] = 0.0
         return
     objects.pop(object_id, None)
+
+
+def schedule_star_death_blast(objects: dict[str, Any], object_id: str, death_time: float) -> None:
+    """Keep a dead star visible, then arm its blast one simulation second later.
+
+    The delayed timestamp makes chained stellar detonations readable and keeps
+    the consequence tied to simulation time rather than wall-clock latency.
+    """
+    object_data = objects.get(object_id)
+    if not isinstance(object_data, dict) or object_data.get("type") != "NATURAL":
+        return
+    if object_data.get("death_blast_resolved") is True or isinstance(object_data.get("death_blast_at"), (int, float)):
+        return
+    object_data["death_blast_at"] = float(death_time) + 1.0

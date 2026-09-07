@@ -49,12 +49,12 @@ class TransferTests(unittest.TestCase):
     def test_plan_creates_transfer_and_destination_circle(self):
         universe = universe_fixture()
         plan = build_transfer_plan(universe, "ship", "starB", 200)
-        self.assertEqual(plan.transfer_curve["motion_type"], "INTERSTELLAR_ELLIPSE")
-        self.assertIn("basis_u", plan.transfer_curve)
-        self.assertIn("basis_v", plan.transfer_curve)
+        self.assertEqual(plan.transfer_curve["motion_type"], "TRANSFER")
+        self.assertEqual(plan.transfer_curve["type"], "STRAIGHT_LINE")
+        self.assertIn("start_location", plan.transfer_curve)
+        self.assertIn("direction_vector", plan.transfer_curve)
         self.assertEqual(plan.destination_curve["focus1"], "starB")
         self.assertEqual(plan.destination_curve["major_axis"], 200)
-        self.assertEqual(plan.destination_curve["direction"], -1)
         self.assertGreater(plan.arrival_time, plan.start_time)
 
         updated = apply_transfer_plan(universe, plan)

@@ -9,6 +9,7 @@ from threading import Thread
 from flask import Flask, jsonify, request
 
 from auth.routes import auth_blueprint
+from auth.tokens import authenticated_username
 from config import Settings
 from firebase.client import initialize_firebase
 from firebase.repository import TransactionConflictError, UniverseRepository
@@ -23,6 +24,7 @@ from simulation.universe import apply_client_reported_projectile_hit, apply_proj
 from simulation.transfer import ManeuverBlockedError, TransferError, apply_transfer_plan, build_transfer_plan
 from universe_factory.config import UniverseGenerationConfig
 from career.config import CareerGenerationConfig
+from career.levels.level_1 import release_level_one_enemy_contact, speed_up_level_one_player_transfer
 from observability import initialize_sentry
 
 
@@ -42,6 +44,8 @@ def create_app() -> Flask:
     runner.projectile_range = settings.projectile_range
     runner.projectile_blast_impact = settings.projectile_blast_impact
     runner.projectile_retention_seconds = settings.projectile_retention_seconds
+    runner.star_death_blast_radius = settings.star_death_blast_radius
+    runner.star_death_blast_damage = settings.star_death_blast_damage
 
     app = Flask(__name__)
     # Gunicorn owns the process-wide logging configuration in Render. Set the
@@ -64,7 +68,7 @@ def create_app() -> Flask:
             response.headers["Vary"] = "Origin"
         # Browser tracing attaches these two headers to calls that should be
         # linked to the corresponding Flask transaction in Sentry.
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, sentry-trace, baggage"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, sentry-trace, baggage"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
 
@@ -107,6 +111,52 @@ def create_app() -> Flask:
         """Useful for local testing. Production ticks should use worker.py."""
         updated = runner.run_tick()
         return jsonify({"ok": True, "universes_updated": updated})
+
+    @app.post("/universes/<universe_id>/career/complete")
+    def complete_career_level(universe_id: str):
+        """Persist any completed career mission for its authenticated owner."""
+        username = authenticated_username(request.headers.get("Authorization"), settings.auth_token_secret)
+        if username is None:
+            return jsonify({"ok": False, "error": "Login required to record career completion."}), 401
+        completed_level: dict[str, int] = {}
+
+        def is_defeated(owner: str, objects: dict) -> bool:
+            owned = [object_data for object_data in objects.values() if isinstance(object_data, dict) and object_data.get("owner") == owner]
+            stars = [object_data for object_data in owned if object_data.get("type") == "NATURAL"]
+            ships = [object_data for object_data in owned if object_data.get("type") == "ARTIFICIAL" and object_data.get("sub_type") != "PROJECTILE"]
+            stars_destroyed = bool(stars) and all(float(star.get("life", 1)) <= 0 for star in stars)
+            ships_destroyed = not ships or sum(max(0.0, float(ship.get("life", 1))) for ship in ships) <= 0
+            return stars_destroyed or ships_destroyed
+
+        def update(universe):
+            if not isinstance(universe, dict) or universe.get("career") is not True or not isinstance(universe.get("career_level"), int):
+                raise TransferError("Career universe does not exist.")
+            if universe.get("career_owner") != username:
+                raise TransferError("Only this career's owner can complete it.")
+            objects = universe.get("objects")
+            participants = universe.get("participants")
+            if not isinstance(objects, dict) or not isinstance(participants, dict):
+                raise TransferError("Career state is incomplete.")
+            opponents = [player for player in participants if player != username]
+            if not opponents or not all(is_defeated(player, objects) for player in opponents):
+                raise TransferError("The mission is not complete yet.")
+            career_state = universe.setdefault("career_state", {})
+            if not isinstance(career_state, dict):
+                career_state = {}
+                universe["career_state"] = career_state
+            career_state["level_completed"] = True
+            career_state["completed_at"] = simulation_time(universe, time.time() * 1000)
+            career_state["status"] = "COMPLETE"
+            completed_level["value"] = int(universe["career_level"])
+            return universe
+
+        try:
+            repository.transaction_universe(universe_id, update)
+        except TransferError as error:
+            return jsonify({"ok": False, "error": str(error)}), 403
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        return jsonify({"ok": True, "level": completed_level["value"], "completed": True})
 
     @app.post("/universes/<universe_id>/tutorial")
     def update_tutorial(universe_id: str):
@@ -195,6 +245,9 @@ def create_app() -> Flask:
                         if isinstance(agent, dict):
                             agent["active"] = True
                             agent["mode"] = "FIRING"
+                if action == "combat_transfer_sent":
+                    current_time = simulation_time(universe, now_ms) if universe.get("active") is True else float(universe.get("time", 0))
+                    speed_up_level_one_player_transfer(universe, current_time, multiplier=3.0)
                 active_after = action in {"combat_orbit", "combat_transfer_sent", "combat_finish"}
                 # Checkpoint analytic time before every new paused tutorial.
                 # Without this, a resume uses the old checkpoint and appears
@@ -247,6 +300,7 @@ def create_app() -> Flask:
                 # The final resume starts precisely at the frozen universe
                 # value; it never derives a second, stale checkpoint.
                 current_time = float(universe.get("time", 0))
+                release_level_one_enemy_contact(universe, current_time)
                 career_state["tutorial_intermission"] = False
                 career_state.pop("tutorial_intermission_started_at_ms", None)
                 active = True
@@ -280,6 +334,61 @@ def create_app() -> Flask:
             "intermission": state.get("tutorial_intermission") is True,
             "intermission_started_at_ms": state.get("tutorial_intermission_started_at_ms"),
         })
+
+    @app.post("/universes/<universe_id>/career/briefing")
+    def update_career_briefing(universe_id: str):
+        """Navigate opening slides and start the mission after the final one."""
+        payload = request.get_json(silent=True) or {}
+        action = payload.get("action")
+        username = authenticated_username(request.headers.get("Authorization"), settings.auth_token_secret)
+        if username is None:
+            return jsonify({"ok": False, "error": "Login required to advance this briefing."}), 401
+        if action not in {"next", "back"}:
+            return jsonify({"ok": False, "error": "A next/back action is required."}), 400
+
+        def update(universe):
+            if not isinstance(universe, dict) or universe.get("career") is not True:
+                raise TransferError("Career universe does not exist.")
+            if universe.get("career_owner") != username:
+                raise TransferError("Only this career's owner can advance its briefing.")
+            career_state = universe.get("career_state")
+            briefing = career_state.get("opening_briefing") if isinstance(career_state, dict) else None
+            messages = briefing.get("messages") if isinstance(briefing, dict) else None
+            if not isinstance(messages, list) or not messages:
+                raise TransferError("This career mission has no opening briefing.")
+            if briefing.get("completed") is True:
+                return universe
+            step = max(0, min(len(messages) - 1, int(briefing.get("step", 0))))
+            if action == "back":
+                briefing["step"] = max(0, step - 1)
+                return universe
+            if step + 1 < len(messages):
+                briefing["step"] = step + 1
+                return universe
+
+            now_ms = time.time() * 1000
+            current_time = float(universe.get("time", 0))
+            briefing["completed"] = True
+            briefing["completed_at"] = current_time
+            career_state["status"] = "ACTIVE"
+            if universe.get("career_level") == 2:
+                # Anchor the first enemy-home shot to mission start. Loading
+                # and briefing time therefore never consume its five seconds.
+                career_state["level_two_enemy_home_armed_at"] = current_time + 5.0
+            universe["time"] = current_time
+            universe["time_updated_at_ms"] = now_ms
+            universe["active"] = True
+            return universe
+
+        try:
+            updated = repository.transaction_universe(universe_id, update)
+        except TransferError as error:
+            return jsonify({"ok": False, "error": str(error)}), 403
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        state = updated.get("career_state") if isinstance(updated, dict) and isinstance(updated.get("career_state"), dict) else {}
+        briefing = state.get("opening_briefing") if isinstance(state.get("opening_briefing"), dict) else {}
+        return jsonify({"ok": True, "step": briefing.get("step", 0), "completed": briefing.get("completed") is True, "active": updated.get("active") is True})
 
     @app.post("/universes/<universe_id>/transfers")
     def create_transfer(universe_id: str):

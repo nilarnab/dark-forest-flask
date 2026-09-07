@@ -219,6 +219,20 @@ def _validate_transfer_clearance(universe: dict[str, Any], plan: TransferPlan) -
 
 
 def _transfer_position(curve: dict[str, Any], fraction: float, objects: dict[str, Any]) -> dict[str, float] | None:
+    if curve.get("type") == "STRAIGHT_LINE":
+        start = curve.get("start_location")
+        vector = curve.get("direction_vector")
+        if not isinstance(start, dict) or not isinstance(vector, dict):
+            return None
+        dx, dy = _number(vector.get("x")), _number(vector.get("y"))
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            return None
+        distance = _number(curve.get("arc_length", 0)) * fraction
+        return {
+            "x": _number(start.get("x")) + dx / length * distance,
+            "y": _number(start.get("y")) + dy / length * distance,
+        }
     start, end = _number(curve.get("phase_start")), _number(curve.get("phase_end"))
     phase = start + (end - start) * fraction
     if isinstance(curve.get("basis_u"), dict) and isinstance(curve.get("basis_v"), dict):
@@ -281,54 +295,61 @@ def build_transfer_plan(
         raise TransferError("The source orbit needs a positive major_axis.")
     source_phase = phase_from_position(departure, source_focus_location, source_curve)
     source_direction = 1.0 if float(direction) > 0 else -1.0
-    destination_direction = -source_direction
-
-    # Policy B: minimize the total distance before arrival. That includes the
-    # source-orbit distance travelled while waiting plus the transfer-arc
-    # length. The grid is deliberately small because this runs inside a
-    # Firebase transaction; it is accurate enough for gameplay routing.
+    # Direct common tangents give the shortest straight interstellar paths.
+    # The ship waits on its current orbit only until it reaches the tangent
+    # point that agrees with its current direction, then travels along the
+    # line and joins the target orbit with a matching tangent direction.
     best = None
     focus_x, focus_y = _number(source_focus_location.get("x")), _number(source_focus_location.get("y"))
     target_x, target_y = _number(target_location.get("x")), _number(target_location.get("y"))
-    for step in range(1, 181):
-        travelled_angle = (step / 180) * math.tau
-        departure_phase = (source_phase + source_direction * travelled_angle) % math.tau
-        candidate_departure = {
-            "x": focus_x + source_radius * math.cos(departure_phase),
-            "y": focus_y + source_radius * math.sin(departure_phase),
-        }
-        if math.hypot(candidate_departure["x"] - target_x, candidate_departure["y"] - target_y) <= radius:
+    centre_dx, centre_dy = target_x - focus_x, target_y - focus_y
+    centre_distance_squared = centre_dx * centre_dx + centre_dy * centre_dy
+    if centre_distance_squared <= 1e-9:
+        raise TransferError("Interstellar transfer requires distinct orbit centres.")
+    for target_radius_sign in (-1.0, 1.0):
+        # Common internal (-) and external (+) tangents.  A signed target
+        # radius reduces both variants to the same closed-form solution.
+        radius_difference = source_radius - target_radius_sign * radius
+        tangent_height_squared = centre_distance_squared - radius_difference * radius_difference
+        if tangent_height_squared < -1e-7:
             continue
-        source_tangent = (source_direction * -math.sin(departure_phase), source_direction * math.cos(departure_phase))
-        wait_distance = source_radius * travelled_angle
-        for target_step in range(180):
-            arrival_angle = (target_step / 180) * math.tau
-            arrival = {"x": target_x + radius * math.cos(arrival_angle), "y": target_y + radius * math.sin(arrival_angle)}
-            destination_tangent = (destination_direction * -math.sin(arrival_angle), destination_direction * math.cos(arrival_angle))
-            tangent_ellipse = _tangent_ellipse(candidate_departure, arrival, source_tangent, destination_tangent)
-            if tangent_ellipse is None:
+        tangent_height = math.sqrt(max(0.0, tangent_height_squared))
+        for orientation in (-1.0, 1.0):
+            normal_x = (centre_dx * radius_difference - centre_dy * tangent_height * orientation) / centre_distance_squared
+            normal_y = (centre_dy * radius_difference + centre_dx * tangent_height * orientation) / centre_distance_squared
+            candidate_departure = {"x": focus_x + source_radius * normal_x, "y": focus_y + source_radius * normal_y}
+            arrival = {"x": target_x + target_radius_sign * radius * normal_x, "y": target_y + target_radius_sign * radius * normal_y}
+            line_dx, line_dy = arrival["x"] - candidate_departure["x"], arrival["y"] - candidate_departure["y"]
+            line_length = math.hypot(line_dx, line_dy)
+            if line_length <= 1e-7:
                 continue
-            centre, basis_u, basis_v = tangent_ellipse
-            a, b, rotation = _ellipse_display_axes(basis_u, basis_v)
-            # Prevent degenerate, needle-like transfer arcs.
-            if b <= 1e-6 or b / a < 0.15:
+            line_direction = (line_dx / line_length, line_dy / line_length)
+            departure_phase = math.atan2(candidate_departure["y"] - focus_y, candidate_departure["x"] - focus_x) % math.tau
+            source_tangent = (source_direction * -math.sin(departure_phase), source_direction * math.cos(departure_phase))
+            if source_tangent[0] * line_direction[0] + source_tangent[1] * line_direction[1] < 1 - 1e-6:
                 continue
-            if not _stays_outside_orbits(centre, basis_u, basis_v, source_focus_location, source_radius, target_location, radius):
+            arrival_phase = math.atan2(arrival["y"] - target_y, arrival["x"] - target_x) % math.tau
+            destination_direction = max(
+                (-1.0, 1.0),
+                key=lambda candidate_direction: (
+                    candidate_direction * -math.sin(arrival_phase) * line_direction[0]
+                    + candidate_direction * math.cos(arrival_phase) * line_direction[1]
+                ),
+            )
+            destination_tangent = (destination_direction * -math.sin(arrival_phase), destination_direction * math.cos(arrival_phase))
+            if destination_tangent[0] * line_direction[0] + destination_tangent[1] * line_direction[1] < 1 - 1e-6:
                 continue
-            arc_length = _arc_length(basis_u, basis_v)
-            total_distance = wait_distance + arc_length
-            candidate = (total_distance, travelled_angle, candidate_departure, arrival, centre, basis_u, basis_v, a, b, rotation)
+            travelled_angle = ((departure_phase - source_phase) % math.tau) if source_direction > 0 else ((source_phase - departure_phase) % math.tau)
+            total_distance = source_radius * travelled_angle + line_length
+            candidate = (total_distance, travelled_angle, candidate_departure, arrival, line_direction, line_length, destination_direction, arrival_phase)
             if best is None or candidate[0] < best[0]:
                 best = candidate
     if best is None:
-        raise TransferError("Could not find a future tangent departure point for this transfer.")
-    _, travelled_angle, departure, arrival, centre, basis_u, basis_v, a, b, rotation = best
-    # Recompute the chosen arc at high precision after the fast grid search.
-    arc_length = _arc_length(basis_u, basis_v, samples=720)
+        raise TransferError("Could not find a usable straight tangent transfer path.")
+    _, travelled_angle, departure, arrival, line_direction, line_length, destination_direction, arrival_phase = best
     wait_seconds = source_radius * travelled_angle / velocity
-    eccentricity = math.sqrt(max(0.0, 1 - (b / a) ** 2))
     start_time = now + wait_seconds
-    arrival_time = start_time + arc_length / velocity
+    arrival_time = start_time + line_length / velocity
 
     transfer_key, destination_key = _next_curve_keys(ship.get("curves"))
     destination_curve = {
@@ -342,7 +363,7 @@ def build_transfer_plan(
         "rotation": 0,
         "velocity": velocity,
         "direction": destination_direction,
-        "phase": math.atan2(arrival["y"] - _number(target_location.get("y")), arrival["x"] - _number(target_location.get("x"))) % math.tau,
+        "phase": arrival_phase,
         "phase_updated_at": arrival_time,
         "valid_from": arrival_time,
         "valid_till": -1,
@@ -350,28 +371,21 @@ def build_transfer_plan(
     }
     transfer_curve = {
         "active": True,
-        "type": "ELLIPSE",
-        "motion_type": "INTERSTELLAR_ELLIPSE",
+        "type": "STRAIGHT_LINE",
+        "motion_type": "TRANSFER",
         "source_object_id": source_curve.get("focus1"),
         "target_object_id": target_id,
-        "major_axis": a,
-        "minor_axis": b,
-        "eccentricity": eccentricity,
-        "rotation": rotation,
-        "centre": centre,
-        "basis_u": basis_u,
-        "basis_v": basis_v,
+        "major_axis": line_length,
+        "eccentricity": 0,
+        "rotation": 0,
         "velocity": velocity,
-        "direction": 1,
-        "phase": 0,
-        "phase_start": 0,
-        "phase_end": math.pi / 2,
-        "phase_updated_at": start_time,
         "valid_from": start_time,
         "valid_till": arrival_time,
-        "departure_location": departure,
+        "start_location": departure,
+        "direction_vector": {"x": line_direction[0], "y": line_direction[1]},
         "arrival_location": arrival,
-        "arc_length": arc_length,
+        "arc_length": line_length,
+        "dotted": True,
     }
     plan = TransferPlan(object_id, source_key, transfer_key, destination_key, start_time, arrival_time, transfer_curve, destination_curve)
     _validate_transfer_clearance(universe, plan)

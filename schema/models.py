@@ -40,6 +40,7 @@ class GunAttachment(TypedDict):
     range: float
     cooldown_seconds: float
     last_fired_at: float
+    blast_impact: float
 
 
 class UniverseObject(TypedDict, total=False):
@@ -56,6 +57,9 @@ class UniverseObject(TypedDict, total=False):
     source_objectid: str
     hit_radius: float
     delete_at: float
+    death_blast_radius: float
+    death_blast_damage: float
+    show_blast_radius: bool
 
 
 class ProjectileOutcome(TypedDict, total=False):
@@ -75,6 +79,10 @@ class UniverseEvent(TypedDict, total=False):
     life_before: float
     life_after: float
     other_object_id: str
+    source_objectid: str
+    source_id: str
+    triggered_star_ids: list[str]
+    occurred_at: float
 
 
 class UniverseRecord(TypedDict, total=False):
@@ -117,9 +125,17 @@ class UniverseMembership(TypedDict):
     universe_type: Literal["CAREER", "ARCADE"]
 
 
-class CareerState(TypedDict):
+class OpeningBriefing(TypedDict, total=False):
+    step: int
+    completed: bool
+    completed_at: float
+    messages: list[str]
+
+
+class CareerState(TypedDict, total=False):
     current_step: str
-    status: str
+    status: Literal["BRIEFING", "ACTIVE", "TRANSITIONING", "COMPLETE"] | str
+    opening_briefing: OpeningBriefing
     tutorial_step: int
     paused_time: float
     tutorial_intermission: bool
@@ -129,7 +145,15 @@ class CareerState(TypedDict):
     enemy_contact_star_id: str
     enemy_contact_expected_at: float
     enemy_contact_progress_starts_at: float
-    status: Literal["ACTIVE", "TRANSITIONING", "COMPLETE"]
+    enemy_contact_hold_seconds: float
+    enemy_contact_duration_seconds: float
+    enemy_contact_released: bool
+    level_completed: bool
+    completed_at: float
+    tutorial_transfer_speed_multiplier: float
+    tutorial_transfer_speeding: bool
+    level_two_enemy_home_armed_at: float
+    level_two_enemy_home_last_fire_at: float
 
 
 class UniverseParticipant(TypedDict):

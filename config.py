@@ -38,6 +38,7 @@ class Settings:
     simulation_write_positions: bool
     projectile_processing_enabled: bool
     cors_allowed_origins: tuple[str, ...]
+    auth_token_secret: str
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -53,7 +54,7 @@ class Settings:
             tick_seconds=float(os.getenv("SIMULATION_TICK_SECONDS", "1")),
             firebase_http_timeout_seconds=float(os.getenv("FIREBASE_HTTP_TIMEOUT_SECONDS", "2")),
             projectile_speed=float(os.getenv("PROJECTILE_SPEED", "500")),
-            projectile_range=float(os.getenv("PROJECTILE_RANGE", "1000")),
+            projectile_range=float(os.getenv("PROJECTILE_RANGE", "400")),
             projectile_blast_impact=float(os.getenv("PROJECTILE_BLAST_IMPACT", "50")),
             projectile_processing_seconds=float(os.getenv("PROJECTILE_PROCESSING_SECONDS", "0.1")),
             projectile_cleanup_seconds=float(os.getenv("PROJECTILE_CLEANUP_SECONDS", "1")),
@@ -72,4 +73,5 @@ class Settings:
             # to the verifier, so continuous full-universe polling is opt-in.
             projectile_processing_enabled=_as_bool(os.getenv("PROJECTILE_PROCESSING_ENABLED"), False),
             cors_allowed_origins=cors_allowed_origins,
+            auth_token_secret=os.getenv("AUTH_TOKEN_SECRET", "dark-forest-local-development-only"),
         )

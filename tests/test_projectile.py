@@ -37,6 +37,28 @@ class ProjectileTests(unittest.TestCase):
         self.assertNotIn("old", universe["events"])
         self.assertIn("recent", universe["events"])
 
+    def test_star_blast_that_kills_another_star_records_cluster_blast_event(self):
+        universe = {
+            "objects": {
+                "source": {
+                    "type": "NATURAL", "sub_type": "STAR", "life": 0,
+                    "location": {"x": 0, "y": 0}, "death_blast_at": 1,
+                    "death_blast_radius": 20, "death_blast_damage": 100,
+                },
+                "target": {
+                    "type": "NATURAL", "sub_type": "STAR", "life": 100,
+                    "location": {"x": 10, "y": 0},
+                },
+            },
+        }
+
+        self.assertTrue(apply_projectile_cleanup(universe, 1))
+        cluster_events = [event for event in universe["events"].values() if event.get("type") == "CLUSTER_BLAST"]
+        self.assertEqual(len(cluster_events), 1)
+        self.assertEqual(cluster_events[0]["source_id"], "source")
+        self.assertEqual(cluster_events[0]["triggered_star_ids"], ["target"])
+        self.assertEqual(universe["objects"]["target"]["death_blast_at"], 2)
+
     def test_worker_does_not_rewrite_live_projectile_location(self):
         projectile = build_projectile({"location": {"x": 10, "y": 20}}, 5, 0, 100, 500, blast_impact=50)
         updates = updates_for_universe("u1", {"time": 5, "objects": {"shot": projectile}}, 1)
@@ -56,12 +78,13 @@ class ProjectileTests(unittest.TestCase):
         self.assertNotIn("shot", universe["objects"])
         event = next(value for key, value in universe["events"].items() if key.startswith("hit_shot_"))
         self.assertEqual(event["target_id"], "target")
+        self.assertEqual(event["source_objectid"], "ship")
         self.assertEqual(event["blast_impact"], 50)
         self.assertEqual(event["life_before"], 40)
         self.assertEqual(event["life_after"], 0)
         self.assertNotIn("target", universe["objects"])
 
-    def test_destroyed_star_becomes_dead_star_instead_of_being_removed(self):
+    def test_destroyed_star_stays_visible_and_arms_a_delayed_blast(self):
         projectile = build_projectile({"location": {"x": 0, "y": 0}}, 0, 0, 100, 500, "ship", blast_impact=50)
         universe = {
             "time": 0,
@@ -74,8 +97,10 @@ class ProjectileTests(unittest.TestCase):
 
         self.assertTrue(apply_projectile_processing(universe, 0, 1))
         self.assertIn("star", universe["objects"])
-        self.assertEqual(universe["objects"]["star"]["sub_type"], "DEAD_STAR")
+        self.assertEqual(universe["objects"]["star"]["sub_type"], "STAR")
         self.assertEqual(universe["objects"]["star"]["life"], 0)
+        hit_time = next(event["hit_time"] for event in universe["events"].values() if event.get("target_id") == "star")
+        self.assertAlmostEqual(universe["objects"]["star"]["death_blast_at"], hit_time + 1.0)
 
     def test_position_reconstruction_can_move_backwards_from_phase_timestamp(self):
         object_data = {

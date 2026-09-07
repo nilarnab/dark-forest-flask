@@ -65,7 +65,7 @@ python -m unittest discover -s tests
 
 ## Interstellar transfer endpoint
 
-Create a smooth elliptical transfer from `objectid1` to a circular orbit of radius `radnew` around `objectid2`:
+Create a transfer from `objectid1` to a circular orbit of radius `radnew` around `objectid2`:
 
 ```bash
 curl -X POST http://localhost:5000/universes/univid1123/transfers \
@@ -73,4 +73,4 @@ curl -X POST http://localhost:5000/universes/univid1123/transfers \
   -d '{"objectid1":"ship123","objectid2":"starB","radnew":500}'
 ```
 
-The endpoint uses the ship's current active curve velocity and direction. It appends a scheduled `INTERSTELLAR_ELLIPSE` transfer curve and a scheduled circular destination curve, ending the old curve at `t1`. The response includes `t1`, `t2`, and the new curve IDs.
+The endpoint uses the ship's current active curve velocity and direction. For different parent stars, it waits for the nearest usable common tangent, then appends a scheduled `STRAIGHT_LINE` / `TRANSFER` curve and a scheduled circular destination curve. Same-star circular orbit changes retain the Hohmann ellipse. The old curve ends at `t1`; the response includes `t1`, `t2`, and the new curve IDs.

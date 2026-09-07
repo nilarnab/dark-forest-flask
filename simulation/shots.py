@@ -36,8 +36,8 @@ def prepare_shot(
     if not isinstance(universe, dict) or not isinstance(universe.get("objects"), dict):
         raise ProjectileError("Universe does not exist.")
     ship = universe["objects"].get(object_id)
-    if not isinstance(ship, dict) or ship.get("type") != "ARTIFICIAL":
-        raise ProjectileError("objectid must identify an ARTIFICIAL firing object.")
+    if not isinstance(ship, dict) or ship.get("type") not in {"ARTIFICIAL", "NATURAL"}:
+        raise ProjectileError("objectid must identify an ARTIFICIAL ship or NATURAL star with a gun.")
     attachments = ship.get("objects")
     gun = attachments.get(gun_id) if isinstance(attachments, dict) else None
     if not isinstance(gun, dict) or gun.get("type") != "GUN":
@@ -47,7 +47,12 @@ def prepare_shot(
         raise ProjectileError("The selected GUN needs a positive numeric velocity.")
     if not isinstance(hit_radius, (int, float)) or hit_radius <= 0:
         raise ProjectileError("The selected GUN needs a positive numeric hit_radius.")
-    gun_range = gun.get("range", projectile_range)
+    # New guns persist their own range.  For existing universes created
+    # before that field was added, use the universe's generation setting so
+    # Level 1 cannot silently fall back to an unrelated server-wide value.
+    spawn_config = universe.get("spawn_config")
+    configured_range = spawn_config.get("gun_range", projectile_range) if isinstance(spawn_config, dict) else projectile_range
+    gun_range = gun.get("range", configured_range)
     if not isinstance(gun_range, (int, float)) or gun_range <= 0:
         raise ProjectileError("The selected GUN needs a positive numeric range.")
     cooldown_seconds = gun.get("cooldown_seconds", 1)
@@ -79,7 +84,7 @@ def prepare_shot(
     projectile = build_projectile(
         firing_ship, fired_at, rotation, float(velocity), float(gun_range),
         source_objectid=object_id, hit_radius=float(hit_radius),
-        blast_impact=projectile_blast_impact,
+        blast_impact=float(gun.get("blast_impact", projectile_blast_impact)),
         retention_seconds=projectile_retention_seconds,
     )
     if client_shot_id:
