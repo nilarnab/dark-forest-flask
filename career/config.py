@@ -29,7 +29,7 @@ class CareerGenerationConfig:
     level_two_cluster_blast_radius: float = 315.0
     level_two_chain_blast_radius: float = 520.0
     level_two_enemy_ship_radar_radius: float = 110.0
-    level_two_enemy_star_fire_interval: float = 3.0
+    level_two_enemy_star_fire_interval: float = 5.0
     level_two_enemy_star_gun_damage: float = 75.0
 
     @classmethod
@@ -52,7 +52,7 @@ class CareerGenerationConfig:
             level_two_cluster_blast_radius=float(os.getenv("CAREER_LEVEL_2_CLUSTER_BLAST_RADIUS", "315")),
             level_two_chain_blast_radius=float(os.getenv("CAREER_LEVEL_2_CHAIN_BLAST_RADIUS", "520")),
             level_two_enemy_ship_radar_radius=float(os.getenv("CAREER_LEVEL_2_ENEMY_SHIP_RADAR_RADIUS", "110")),
-            level_two_enemy_star_fire_interval=float(os.getenv("CAREER_LEVEL_2_ENEMY_STAR_FIRE_INTERVAL", "3")),
+            level_two_enemy_star_fire_interval=float(os.getenv("CAREER_LEVEL_2_ENEMY_STAR_FIRE_INTERVAL", "5")),
             level_two_enemy_star_gun_damage=float(os.getenv("CAREER_LEVEL_2_ENEMY_STAR_GUN_DAMAGE", "75")),
         )
         config.validate()

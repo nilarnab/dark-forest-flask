@@ -244,8 +244,7 @@ class SimulationRunner:
                 self.repository.transaction_universe(universe_id, transfer)
                 return True
 
-        # Star bombardment: 75 damage every 3 seconds yields about forty
-        # seconds to destroy a 1,000-life cluster target.
+        # Star bombardment uses the cooldown persisted on the mounted gun.
         if isinstance(enemy_home, dict) and isinstance(cluster_target, dict) and isinstance(enemy_home_id, str) and isinstance(cluster_target_id, str):
             armed_at = career.get("level_two_enemy_home_armed_at")
             if isinstance(armed_at, (int, float)) and current_time >= float(armed_at):
