@@ -4,7 +4,9 @@ This Flask project is authoritative for validated actions and outcomes. The Reac
 
 ## Layout
 
-- Flask starts outcome workers in background threads. Projectile hit/expiry processing remains server authoritative.
+- Flask can start maintenance and agent workers in background threads. Clients
+  report projectile contacts and advance scheduled `STAR_DIED` events through
+  idempotent Flask endpoints; projectile expiry remains maintenance work.
 - `worker.py` remains available when you deliberately want a standalone worker process.
 - `app.py` provides `GET /health` and `POST /simulation/tick` for health checks and local testing.
 - `simulation/` contains Firebase-independent movement and ellipse math.

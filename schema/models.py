@@ -59,6 +59,8 @@ class UniverseObject(TypedDict, total=False):
     delete_at: float
     death_blast_radius: float
     death_blast_damage: float
+    death_blast_at: float
+    death_blast_resolved: bool
     show_blast_radius: bool
 
 
@@ -81,6 +83,10 @@ class UniverseEvent(TypedDict, total=False):
     other_object_id: str
     source_objectid: str
     source_id: str
+    star_id: str
+    blast_at: float
+    resolved: bool
+    resolved_at: float
     triggered_star_ids: list[str]
     occurred_at: float
 

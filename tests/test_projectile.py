@@ -2,7 +2,7 @@ import unittest
 
 from simulation.projectile import build_projectile
 from simulation.movement import position_for_object_at_time
-from simulation.universe import apply_projectile_cleanup, apply_projectile_processing, updates_for_universe
+from simulation.universe import apply_projectile_cleanup, apply_projectile_processing, resolve_star_death_blast, updates_for_universe
 
 
 class ProjectileTests(unittest.TestCase):
@@ -52,12 +52,54 @@ class ProjectileTests(unittest.TestCase):
             },
         }
 
-        self.assertTrue(apply_projectile_cleanup(universe, 1))
+        self.assertEqual(resolve_star_death_blast(universe, "source", 1)["status"], "confirmed")
         cluster_events = [event for event in universe["events"].values() if event.get("type") == "CLUSTER_BLAST"]
         self.assertEqual(len(cluster_events), 1)
         self.assertEqual(cluster_events[0]["source_id"], "source")
         self.assertEqual(cluster_events[0]["triggered_star_ids"], ["target"])
         self.assertEqual(universe["objects"]["target"]["death_blast_at"], 2)
+
+    def test_cleanup_does_not_drive_pending_star_blasts(self):
+        universe = {
+            "objects": {
+                "source": {
+                    "type": "NATURAL", "life": 0, "location": {"x": 0, "y": 0},
+                    "death_blast_at": 1, "death_blast_radius": 20, "death_blast_damage": 100,
+                },
+                "target": {"type": "NATURAL", "life": 100, "location": {"x": 10, "y": 0}},
+            },
+        }
+
+        self.assertFalse(apply_projectile_cleanup(universe, 2))
+        self.assertEqual(universe["objects"]["target"]["life"], 100)
+
+    def test_client_scheduled_star_blast_is_idempotent_and_announces_chain(self):
+        universe = {
+            "objects": {
+                "source": {
+                    "type": "NATURAL", "sub_type": "STAR", "life": 0,
+                    "location": {"x": 0, "y": 0}, "death_blast_at": 11,
+                    "death_blast_radius": 20, "death_blast_damage": 100,
+                },
+                "target": {
+                    "type": "NATURAL", "sub_type": "STAR", "life": 100,
+                    "location": {"x": 10, "y": 0},
+                },
+            },
+            "events": {
+                "death": {"type": "STAR_DIED", "star_id": "source", "blast_at": 11, "resolved": False},
+            },
+        }
+
+        self.assertEqual(resolve_star_death_blast(universe, "source", 10.5)["status"], "not_due")
+        result = resolve_star_death_blast(universe, "source", 11)
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(result["triggered_star_ids"], ["target"])
+        self.assertTrue(universe["events"]["death"]["resolved"])
+        self.assertEqual(universe["objects"]["target"]["death_blast_at"], 12)
+        chained_deaths = [event for event in universe["events"].values() if event.get("type") == "STAR_DIED" and event.get("star_id") == "target"]
+        self.assertEqual(len(chained_deaths), 1)
+        self.assertEqual(resolve_star_death_blast(universe, "source", 12)["status"], "already_resolved")
 
     def test_worker_does_not_rewrite_live_projectile_location(self):
         projectile = build_projectile({"location": {"x": 10, "y": 20}}, 5, 0, 100, 500, blast_impact=50)
@@ -101,6 +143,9 @@ class ProjectileTests(unittest.TestCase):
         self.assertEqual(universe["objects"]["star"]["life"], 0)
         hit_time = next(event["hit_time"] for event in universe["events"].values() if event.get("target_id") == "star")
         self.assertAlmostEqual(universe["objects"]["star"]["death_blast_at"], hit_time + 1.0)
+        death_event = next(event for event in universe["events"].values() if event.get("type") == "STAR_DIED")
+        self.assertEqual(death_event["star_id"], "star")
+        self.assertAlmostEqual(death_event["blast_at"], hit_time + 1.0)
 
     def test_position_reconstruction_can_move_backwards_from_phase_timestamp(self):
         object_data = {

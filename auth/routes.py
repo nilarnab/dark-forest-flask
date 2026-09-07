@@ -32,7 +32,13 @@ def enter_level_one_invite():
         "LEVEL1 invite completed in %.3fs (created=%s universe=%s).",
         time.perf_counter() - started_at, result.created, result.universe_id,
     )
-    return jsonify({"ok": True, "user_id": result.user_id, "universe_id": result.universe_id, "created": result.created}), 201 if result.created else 200
+    return jsonify({
+        "ok": True,
+        "user_id": result.user_id,
+        "universe_id": result.universe_id,
+        "created": result.created,
+        "auth_token": issue_login_token(result.user_id, current_app.config["settings"].auth_token_secret),
+    }), 201 if result.created else 200
 
 
 @auth_blueprint.post("/login")
@@ -124,14 +130,4 @@ def universe_heartbeat():
     # This is intentionally in-memory. It prevents idle universes from
     # consuming Firebase simulation reads/writes without adding presence writes.
     current_app.config["universe_activity"].touch(universe_id)
-    # Schedule the simple Level 1 tutorial agent here too.  This avoids a
-    # production-only failure mode where Render serves the heartbeat in a
-    # different process from the background worker holding in-memory presence.
-    try:
-        agent_fired = current_app.config["simulation_runner"].run_level_one_agent_tick(universe_id)
-    except Exception:
-        # Presence must remain reliable even if Firebase temporarily rejects
-        # the optional Level 1 agent scheduling read/transaction.
-        current_app.logger.exception("Level 1 agent heartbeat scheduling failed for universe %s.", universe_id)
-        agent_fired = False
-    return jsonify({"ok": True, "universe_id": universe_id, "agent_fired": agent_fired})
+    return jsonify({"ok": True, "universe_id": universe_id})

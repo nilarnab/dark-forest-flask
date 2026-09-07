@@ -117,9 +117,6 @@ class SimulationRunner:
             if not is_universe_active(universe):
                 continue
             current_time = simulation_time(universe, now_ms)
-            # Level 1's agent is intentionally simple: once the combat lesson
-            # is armed it fires at the player's home star every five seconds.
-            self.run_career_agent_tick(universe_id, universe, current_time, now_ms)
             if not apply_projectile_cleanup(universe, current_time, self.hit_event_retention_seconds, self.star_death_blast_radius, self.star_death_blast_damage):
                 continue
 
@@ -132,26 +129,27 @@ class SimulationRunner:
             deleted += 1
         return deleted
 
-    def run_level_one_agent_tick(self, universe_id: str) -> bool:
-        """Advance the Level 1 agent from a client heartbeat.
-
-        Render can run HTTP requests and background threads in different
-        processes.  The activity tracker is deliberately in-memory, so a
-        background worker cannot reliably see the universe touched by the
-        request-handling process.  Heartbeats, however, are received in the
-        exact process serving the player.  Use them as a small, idempotent
-        scheduler for the tutorial agent.
-        """
-        universe = self.repository.get_universe(universe_id)
-        if not is_universe_active(universe):
-            return False
-        now_ms = time.time() * 1000
-        return self.run_career_agent_tick(
-            universe_id,
-            universe,
-            simulation_time(universe, now_ms),
-            now_ms,
-        )
+    def run_career_agent_tick_from_client(self, universe_id: str, requesting_user: str | None = None) -> bool:
+        """Advance a career agent from an explicit authenticated client tick."""
+        # Multiple tabs may tick together. Serialize the read/cooldown/write
+        # sequence so only one request can claim a firing interval in the
+        # configured single Gunicorn process.
+        with self.repository.universe_lock(universe_id):
+            universe = self.repository.get_universe(universe_id)
+            if not is_universe_active(universe):
+                return False
+            participants = universe.get("participants")
+            if requesting_user is not None and (
+                not isinstance(participants, dict) or requesting_user not in participants
+            ):
+                raise PermissionError("The authenticated user is not a participant in this universe.")
+            now_ms = time.time() * 1000
+            return self.run_career_agent_tick(
+                universe_id,
+                universe,
+                simulation_time(universe, now_ms),
+                now_ms,
+            )
 
     def run_career_agent_tick(self, universe_id: str, universe: dict | None = None, current_time: float | None = None, now_ms: float | None = None) -> bool:
         """Run the small deterministic AI scheduler for the active career level."""

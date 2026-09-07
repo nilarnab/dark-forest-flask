@@ -100,7 +100,7 @@ def apply_projectile_processing(universe: dict[str, Any], start_time: float, end
             objects.pop(projectile_id, None)
             if life_after is not None and life_after <= 0:
                 preserve_dead_star(objects, target_id)
-                schedule_star_death_blast(objects, target_id, hit_time)
+                schedule_star_death_blast(objects, target_id, hit_time, events)
             event = {
                 "type": "PROJECTILE_HIT",
                 "projectile_id": projectile_id,
@@ -156,14 +156,14 @@ def apply_client_reported_projectile_hit(
         life_after = max(0.0, float(life_before) - max(0.0, float(impact)))
         target["life"] = life_after
     location = projectile.get("location")
-    objects.pop(projectile_id, None)
-    if life_after is not None and life_after <= 0:
-        preserve_dead_star(objects, target_id)
-        schedule_star_death_blast(objects, target_id, hit_time)
     events = universe.setdefault("events", {})
     if not isinstance(events, dict):
         events = {}
         universe["events"] = events
+    objects.pop(projectile_id, None)
+    if life_after is not None and life_after <= 0:
+        preserve_dead_star(objects, target_id)
+        schedule_star_death_blast(objects, target_id, hit_time, events)
     event = {"type": "PROJECTILE_HIT", "projectile_id": projectile_id, "target_id": target_id, "hit_time": hit_time, "location": location}
     source_object_id = projectile.get("source_objectid")
     if isinstance(source_object_id, str):
@@ -182,6 +182,7 @@ def apply_client_reported_projectile_hit(
 
 def apply_star_death_blast(
     objects: dict[str, Any], source_id: str, hit_time: float, radius: float, damage: float,
+    events: dict[str, Any] | None = None,
 ) -> list[str]:
     """Apply one non-recursive star-death blast at the exact reported hit time."""
     source = objects.get(source_id)
@@ -204,65 +205,75 @@ def apply_star_death_blast(
         affected.append(object_id)
         if obj["life"] <= 0:
             preserve_dead_star(objects, object_id)
-            schedule_star_death_blast(objects, object_id, hit_time)
+            schedule_star_death_blast(objects, object_id, hit_time, events)
     return affected
 
 
-def resolve_pending_star_death_blasts(
-    universe: dict[str, Any], current_time: float, default_radius: float = 200, default_damage: float = 100,
-) -> bool:
-    """Resolve every star blast that has waited its one simulation second."""
+def resolve_star_death_blast(
+    universe: dict[str, Any], source_id: str, current_time: float,
+    default_radius: float = 200, default_damage: float = 100,
+) -> dict[str, Any]:
+    """Resolve one client-scheduled stellar blast exactly once."""
     objects = universe.get("objects")
     if not isinstance(objects, dict):
-        return False
+        return {"status": "rejected", "reason": "Universe has no objects."}
+    source = objects.get(source_id)
+    if not isinstance(source, dict) or source.get("type") != "NATURAL" or source.get("life") != 0:
+        return {"status": "rejected", "reason": "Star is not dead."}
+    blast_at = source.get("death_blast_at")
+    if not isinstance(blast_at, (int, float)):
+        return {"status": "rejected", "reason": "Star has no scheduled blast."}
+    if source.get("death_blast_resolved") is True:
+        return {"status": "already_resolved", "blast_at": float(blast_at)}
+    if current_time < float(blast_at):
+        return {"status": "not_due", "blast_at": float(blast_at), "current_time": float(current_time)}
+
     events = universe.setdefault("events", {})
     if not isinstance(events, dict):
         events = {}
         universe["events"] = events
-    changed = False
-    due = sorted(
-        (object_id, obj) for object_id, obj in objects.items()
-        if isinstance(obj, dict) and obj.get("type") == "NATURAL"
-        and obj.get("life") == 0 and isinstance(obj.get("death_blast_at"), (int, float))
-        and float(obj["death_blast_at"]) <= current_time and obj.get("death_blast_resolved") is not True
-    )
-    for source_id, source in due:
-        blast_time = float(source["death_blast_at"])
-        radius = float(source.get("death_blast_radius", default_radius))
-        damage = float(source.get("death_blast_damage", default_damage))
-        living_stars = {
-            object_id for object_id, obj in objects.items()
-            if object_id != source_id and isinstance(obj, dict) and obj.get("type") == "NATURAL"
-            and isinstance(obj.get("life"), (int, float)) and float(obj["life"]) > 0
+    radius = float(source.get("death_blast_radius", default_radius))
+    damage = float(source.get("death_blast_damage", default_damage))
+    living_stars = {
+        object_id for object_id, obj in objects.items()
+        if object_id != source_id and isinstance(obj, dict) and obj.get("type") == "NATURAL"
+        and isinstance(obj.get("life"), (int, float)) and float(obj["life"]) > 0
+    }
+    affected = apply_star_death_blast(objects, source_id, float(blast_at), radius, damage, events)
+    chained_stars = [
+        object_id for object_id in affected
+        if object_id in living_stars and isinstance(objects.get(object_id), dict)
+        and objects[object_id].get("life") == 0
+    ]
+    source["death_blast_resolved"] = True
+    for event in events.values():
+        if isinstance(event, dict) and event.get("type") == "STAR_DIED" and event.get("star_id") == source_id:
+            event["resolved"] = True
+            event["resolved_at"] = float(current_time)
+    events[f"star_blast_{source_id}_{round(float(blast_at) * 1000)}"] = {
+        "type": "STAR_DEATH_BLAST", "source_id": source_id, "occurred_at": float(blast_at),
+        "radius": radius, "affected": affected,
+    }
+    if chained_stars and not any(isinstance(event, dict) and event.get("type") == "CLUSTER_BLAST" for event in events.values()):
+        events[f"cluster_blast_{source_id}_{round(float(blast_at) * 1000)}"] = {
+            "type": "CLUSTER_BLAST", "source_id": source_id,
+            "triggered_star_ids": chained_stars, "occurred_at": float(blast_at),
         }
-        affected = apply_star_death_blast(objects, source_id, blast_time, radius, damage)
-        chained_stars = [
-            object_id for object_id in affected
-            if object_id in living_stars and isinstance(objects.get(object_id), dict)
-            and objects[object_id].get("life") == 0
-            and isinstance(objects[object_id].get("death_blast_at"), (int, float))
-        ]
-        source["death_blast_resolved"] = True
-        events[f"star_blast_{source_id}_{round(blast_time * 1000)}"] = {
-            "type": "STAR_DEATH_BLAST", "source_id": source_id, "occurred_at": blast_time,
-            "radius": radius, "affected": affected,
-        }
-        if chained_stars and not any(isinstance(event, dict) and event.get("type") == "CLUSTER_BLAST" for event in events.values()):
-            events[f"cluster_blast_{source_id}_{round(blast_time * 1000)}"] = {
-                "type": "CLUSTER_BLAST",
-                "source_id": source_id,
-                "triggered_star_ids": chained_stars,
-                "occurred_at": blast_time,
-            }
-        changed = True
-    return changed
+    return {
+        "status": "confirmed", "blast_at": float(blast_at), "affected": affected,
+        "triggered_star_ids": chained_stars,
+    }
 
 
 def apply_projectile_cleanup(
     universe: dict[str, Any], current_time: float, hit_event_retention_seconds: float = 10,
     star_death_blast_radius: float = 200, star_death_blast_damage: float = 100,
 ) -> bool:
-    """Prune retained projectiles, resolve due star blasts, and trim events."""
+    """Prune retained projectiles and old events.
+
+    Star blasts are advanced by clients observing STAR_DIED, then calling the
+    idempotent blast endpoint. Cleanup deliberately does not drive gameplay.
+    """
     objects = universe.get("objects")
     if not isinstance(objects, dict):
         return False
@@ -270,7 +281,7 @@ def apply_projectile_cleanup(
     if not isinstance(outcomes, dict):
         outcomes = {}
         universe["recent_projectile_outcomes"] = outcomes
-    changed = resolve_pending_star_death_blasts(universe, current_time, star_death_blast_radius, star_death_blast_damage)
+    changed = False
     for projectile_id, projectile in list(objects.items()):
         if not isinstance(projectile, dict) or projectile.get("sub_type") != "PROJECTILE":
             continue
@@ -284,8 +295,10 @@ def apply_projectile_cleanup(
     if isinstance(events, dict):
         for event_id, event in list(events.items()):
             if not isinstance(event, dict) or event.get("type") not in {
-                "PROJECTILE_HIT", "OBJECT_COLLISION", "PROJECTILE_FIRED", "TRANSFER_SCHEDULED", "STAR_DEATH_BLAST",
+                "PROJECTILE_HIT", "OBJECT_COLLISION", "PROJECTILE_FIRED", "TRANSFER_SCHEDULED", "STAR_DIED", "STAR_DEATH_BLAST",
             }:
+                continue
+            if event.get("type") == "STAR_DIED" and event.get("resolved") is not True:
                 continue
             event_time = event.get("hit_time", event.get("occurred_at"))
             if isinstance(event_time, (int, float)) and current_time >= event_time + max(0, hit_event_retention_seconds):

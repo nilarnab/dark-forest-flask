@@ -20,7 +20,7 @@ from simulation.shots import prepare_shot
 from simulation.clock import simulation_time
 from simulation.movement import curve_items, position_for_object_at_time
 from simulation.collision import verify_and_apply_collision
-from simulation.universe import apply_client_reported_projectile_hit, apply_projectile_processing, straight_line_position
+from simulation.universe import apply_client_reported_projectile_hit, apply_projectile_processing, resolve_star_death_blast, straight_line_position
 from simulation.transfer import ManeuverBlockedError, TransferError, apply_transfer_plan, build_transfer_plan
 from universe_factory.config import UniverseGenerationConfig
 from career.config import CareerGenerationConfig
@@ -111,6 +111,29 @@ def create_app() -> Flask:
         """Useful for local testing. Production ticks should use worker.py."""
         updated = runner.run_tick()
         return jsonify({"ok": True, "universes_updated": updated})
+
+    @app.post("/universes/<universe_id>/agent-tick")
+    def career_agent_tick(universe_id: str):
+        """Let a participating client clock the authoritative career agent."""
+        username = authenticated_username(request.headers.get("Authorization"), settings.auth_token_secret)
+        if username is None:
+            return jsonify({"ok": False, "error": "A valid login or guest session is required."}), 401
+
+        started_at = time.perf_counter()
+        try:
+            fired = runner.run_career_agent_tick_from_client(universe_id, requesting_user=username)
+        except PermissionError as error:
+            return jsonify({"ok": False, "error": str(error)}), 403
+        except Exception:
+            app.logger.exception("AGENT TICK failed universe=%s user=%s", universe_id, username)
+            return jsonify({"ok": False, "error": "Agent tick failed."}), 503
+        elapsed = time.perf_counter() - started_at
+        if fired:
+            app.logger.info(
+                "AGENT TICK action committed universe=%s user=%s in %.3fs",
+                universe_id, username, elapsed,
+            )
+        return jsonify({"ok": True, "universe_id": universe_id, "agent_fired": fired})
 
     @app.post("/universes/<universe_id>/career/complete")
     def complete_career_level(universe_id: str):
@@ -322,7 +345,7 @@ def create_app() -> Flask:
             # tutorial is dismissed, rather than waiting for the next UI
             # heartbeat (which may be almost two seconds later).
             try:
-                runner.run_level_one_agent_tick(universe_id)
+                runner.run_career_agent_tick_from_client(universe_id)
             except Exception:
                 app.logger.exception("Could not fire the Level 1 agent opening shot in %s.", universe_id)
         state = updated.get("career_state") if isinstance(updated.get("career_state"), dict) else {}
@@ -553,6 +576,29 @@ def create_app() -> Flask:
         except TransactionConflictError as error:
             return jsonify({"ok": False, "error": str(error)}), 409
         return jsonify({"ok": True, **result_holder})
+
+    @app.post("/universes/<universe_id>/stars/<star_id>/blast")
+    def resolve_scheduled_star_blast(universe_id: str, star_id: str):
+        """Resolve one STAR_DIED event; concurrent client requests are idempotent."""
+        result_holder: dict[str, object] = {}
+
+        def resolve(universe):
+            if not isinstance(universe, dict):
+                result_holder.update(status="rejected", reason="Universe does not exist.")
+                return universe
+            current_time = simulation_time(universe, time.time() * 1000)
+            result_holder.update(resolve_star_death_blast(
+                universe, star_id, current_time,
+                settings.star_death_blast_radius, settings.star_death_blast_damage,
+            ))
+            return universe
+
+        try:
+            repository.transaction_universe(universe_id, resolve)
+        except TransactionConflictError as error:
+            return jsonify({"ok": False, "error": str(error)}), 409
+        status = result_holder.get("status")
+        return jsonify({"ok": status in {"confirmed", "already_resolved"}, **result_holder}), 425 if status == "not_due" else 200
 
     if settings.simulation_enabled:
         cleaner_thread = Thread(target=runner.run_projectile_cleanup_forever, name="projectile-cleanup-worker", daemon=True)

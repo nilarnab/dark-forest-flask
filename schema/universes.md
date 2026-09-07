@@ -167,8 +167,18 @@ After `valid_till`, the UI hides the projectile. Flask retains it until
 `PROJECTILE_BLAST_IMPACT` (default `50`) sets the life deducted from a target
 when Flask confirms the projectile hit. Life is clamped at `0`, and the
 top-level target object is then deleted from Firebase (including its mounted
-objects). A destroyed `STAR` is preserved instead with
-`sub_type: "DEAD_STAR"` and `life: 0`.
+objects). A destroyed `STAR` is preserved with `sub_type: "STAR"` and
+`life: 0`.
+
+The transaction that first reduces a star to zero also writes a `STAR_DIED`
+event containing `star_id`, `occurred_at`, and `blast_at` (one simulation
+second later). Clients render that countdown and call
+`POST /universes/{universeId}/stars/{starId}/blast` when it is due. The Flask
+transaction resolves it exactly once, applies blast damage at `blast_at`, marks
+the death event resolved, and emits `STAR_DEATH_BLAST`. Any newly killed star
+gets its own `STAR_DIED` event, producing the chain without a gameplay polling
+worker. Concurrent calls from multiple observers are safe and return
+`already_resolved` after the first succeeds.
 
 ## Curves
 

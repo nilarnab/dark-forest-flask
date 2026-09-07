@@ -58,10 +58,10 @@ def verify_and_apply_collision(
     }
     if first_after <= 0:
         preserve_dead_star(objects, first_id)
-        schedule_star_death_blast(objects, first_id, hit_time)
+        schedule_star_death_blast(objects, first_id, hit_time, events)
     if second_after <= 0:
         preserve_dead_star(objects, second_id)
-        schedule_star_death_blast(objects, second_id, hit_time)
+        schedule_star_death_blast(objects, second_id, hit_time, events)
     return {
         "status": "confirmed",
         "distance": distance,
@@ -96,7 +96,9 @@ def preserve_dead_star(objects: dict[str, Any], object_id: str) -> None:
     objects.pop(object_id, None)
 
 
-def schedule_star_death_blast(objects: dict[str, Any], object_id: str, death_time: float) -> None:
+def schedule_star_death_blast(
+    objects: dict[str, Any], object_id: str, death_time: float, events: dict[str, Any] | None = None,
+) -> None:
     """Keep a dead star visible, then arm its blast one simulation second later.
 
     The delayed timestamp makes chained stellar detonations readable and keeps
@@ -105,6 +107,26 @@ def schedule_star_death_blast(objects: dict[str, Any], object_id: str, death_tim
     object_data = objects.get(object_id)
     if not isinstance(object_data, dict) or object_data.get("type") != "NATURAL":
         return
-    if object_data.get("death_blast_resolved") is True or isinstance(object_data.get("death_blast_at"), (int, float)):
+    if object_data.get("death_blast_resolved") is True:
         return
-    object_data["death_blast_at"] = float(death_time) + 1.0
+    blast_at = object_data.get("death_blast_at")
+    if not isinstance(blast_at, (int, float)):
+        blast_at = float(death_time) + 1.0
+        object_data["death_blast_at"] = blast_at
+    if not isinstance(events, dict):
+        return
+    already_announced = any(
+        isinstance(event, dict)
+        and event.get("type") == "STAR_DIED"
+        and event.get("star_id") == object_id
+        and event.get("blast_at") == blast_at
+        for event in events.values()
+    )
+    if not already_announced:
+        events[f"star_died_{object_id}_{round(float(death_time) * 1000)}"] = {
+            "type": "STAR_DIED",
+            "star_id": object_id,
+            "occurred_at": float(death_time),
+            "blast_at": float(blast_at),
+            "resolved": False,
+        }
